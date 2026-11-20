@@ -11,6 +11,24 @@
 #define PN532_HSU_DISCARD_SIZE 32U
 #define PN532_HSU_MAX_TIMEOUT_MS UINT32_C(0x7FFFFFFF)
 
+/**
+ * @brief One receive operation's immutable timeout and UART context.
+ *
+ * @note Shared by RX helpers to avoid repeating the same arguments.
+ */
+typedef struct {
+    const pn532_hsu_t *hsu;
+    uint32_t started_ms;
+    uint32_t timeout_ms;
+} hsu_rx_context_t;
+
+/** @brief Partially received header and the expected full frame length. */
+typedef struct {
+    uint8_t data[PN532_HSU_HEADER_SIZE];
+    size_t used;
+    size_t expected;
+} hsu_frame_header_t;
+
 /** @brief Map unsupported platform statuses to an I/O error. */
 static pn532_status_t hsu_io_status(pn532_status_t status)
 {
@@ -21,105 +39,110 @@ static pn532_status_t hsu_io_status(pn532_status_t status)
     return PN532_STATUS_IO_ERROR;
 }
 
-/** @brief Derive a remaining timeout, safely accounting for timer wrap. */
-static uint32_t hsu_remaining(const pn532_hsu_t *hsu,
-                              uint32_t started, uint32_t timeout_ms)
+/** @brief Remaining time for this receive operation, including timer wrap. */
+static uint32_t hsu_remaining(const hsu_rx_context_t *rx)
 {
-    const uint32_t elapsed = hsu->io->now_ms(hsu->context) - started;
-    return elapsed >= timeout_ms ? 0U : timeout_ms - elapsed;
+    const uint32_t elapsed = rx->hsu->io->now_ms(rx->hsu->context)
+                             - rx->started_ms;
+
+    return elapsed >= rx->timeout_ms ? 0U : rx->timeout_ms - elapsed;
 }
 
-/** @brief Read exactly count bytes under one overall operation deadline. */
-static pn532_status_t hsu_read(const pn532_hsu_t *hsu,
-                               uint8_t *data, size_t count,
-                               uint32_t started, uint32_t timeout_ms)
+/** @brief Read an exact number of bytes within the shared deadline. */
+static pn532_status_t hsu_read(
+    const hsu_rx_context_t *rx,
+    uint8_t *data,
+    size_t count)
 {
-    pn532_hsu_rx_t request = {data, count, hsu_remaining(hsu, started, timeout_ms)};
+    pn532_hsu_rx_t request = {data, count, hsu_remaining(rx)};
+
     if (request.timeout_ms == 0U) {
         return PN532_STATUS_TIMEOUT;
     }
-    return hsu_io_status(hsu->io->read_exact(hsu->context, &request));
+    return hsu_io_status(rx->hsu->io->read_exact(
+        rx->hsu->context, &request));
 }
 
-/** @brief Skip garbage and locate the canonical 00 00 FF start marker. */
-static pn532_status_t hsu_find_start(const pn532_hsu_t *hsu,
-                                     uint8_t *header, uint32_t started,
-                                     uint32_t timeout_ms)
+/** @brief Find 00 00 FF without waiting past the operation deadline. */
+static pn532_status_t hsu_find_start(
+    const hsu_rx_context_t *rx,
+    hsu_frame_header_t *header)
 {
     uint8_t a = 0xFFU;
     uint8_t b = 0xFFU;
-    uint8_t current = 0U;
+    uint8_t current;
     pn532_status_t result;
 
-    for (;;) {
-        result = hsu_read(hsu, &current, 1U, started, timeout_ms);
+    while (hsu_remaining(rx) != 0U) {
+        result = hsu_read(rx, &current, 1U);
         if (result != PN532_STATUS_OK) {
             return result;
         }
         if (a == 0U && b == 0U && current == 0xFFU) {
-            header[0] = 0U;
-            header[1] = 0U;
-            header[2] = 0xFFU;
+            header->data[0] = 0U;
+            header->data[1] = 0U;
+            header->data[2] = 0xFFU;
+            header->used = 3U;
             return PN532_STATUS_OK;
         }
         a = b;
         b = current;
     }
+    return PN532_STATUS_TIMEOUT;
 }
 
-/** @brief Discard known surplus bytes to realign subsequent read calls. */
-static pn532_status_t hsu_discard(const pn532_hsu_t *hsu,
-                                  size_t bytes, uint32_t started,
-                                  uint32_t timeout_ms)
+/** @brief Consume a known number of unread bytes after buffer overflow. */
+static pn532_status_t hsu_discard(
+    const hsu_rx_context_t *rx,
+    size_t bytes)
 {
     uint8_t scratch[PN532_HSU_DISCARD_SIZE];
-    pn532_status_t result;
 
-    while (bytes > 0U) {
-        const size_t count = bytes < sizeof(scratch) ? bytes : sizeof(scratch);
-        result = hsu_read(hsu, scratch, count, started, timeout_ms);
+    while (bytes != 0U) {
+        const size_t chunk = bytes < sizeof(scratch) ? bytes : sizeof(scratch);
+        const pn532_status_t result = hsu_read(rx, scratch, chunk);
+
         if (result != PN532_STATUS_OK) {
             return result;
         }
-        bytes -= count;
+        bytes -= chunk;
     }
     return PN532_STATUS_OK;
 }
 
-/** @brief Collect prefix bytes and determine the full expected frame size. */
-static pn532_status_t hsu_read_header(const pn532_hsu_t *hsu,
-                                      uint8_t *header, size_t *used,
-                                      size_t *expected, uint32_t started,
-                                      uint32_t timeout_ms)
+/** @brief Receive enough header bytes to determine the entire frame size. */
+static pn532_status_t hsu_read_header(
+    const hsu_rx_context_t *rx,
+    hsu_frame_header_t *header)
 {
+    pn532_frame_span_t prefix = {header->data, header->used};
     pn532_frame_result_t status;
-    pn532_frame_span_t prefix = {header, 3U};
     size_t next;
-    pn532_status_t io_result;
 
-    *used = 3U;
-    for (;;) {
+    /* Prefix strictly increases on every successful read (max. 8 bytes). */
+    while (prefix.length <= sizeof(header->data)) {
         status = pn532_frame_rx_plan(&prefix, PN532_FRAME_MAX_SIZE, &next);
         if (status == PN532_FRAME_OK) {
-            *expected = prefix.length;
+            header->expected = prefix.length;
             return PN532_STATUS_OK;
         }
         if (status != PN532_FRAME_NEED_MORE_DATA) {
             return PN532_STATUS_FRAME_ERROR;
         }
-        if (prefix.length + next > PN532_HSU_HEADER_SIZE) {
-            *used = prefix.length;
-            *expected = prefix.length + next;
+        if (next > sizeof(header->data) - prefix.length) {
+            header->expected = prefix.length + next;
             return PN532_STATUS_OK;
         }
-        io_result = hsu_read(hsu, header + prefix.length, next,
-                             started, timeout_ms);
-        if (io_result != PN532_STATUS_OK) {
-            return io_result;
+
+        const pn532_status_t result = hsu_read(
+            rx, header->data + prefix.length, next);
+        if (result != PN532_STATUS_OK) {
+            return result;
         }
         prefix.length += next;
-        *used = prefix.length;
+        header->used = prefix.length;
     }
+    return PN532_STATUS_FRAME_ERROR;
 }
 
 /** @brief Transmit one raw canonical PN532 frame without retries. */
@@ -141,45 +164,43 @@ static pn532_status_t hsu_write_frame(void *context, const pn532_tx_frame_t *fra
     return hsu_io_status(hsu->io->write_exact(hsu->context, &request));
 }
 
-/** @brief Read the header, then read or drain the remaining frame bytes. */
-static pn532_status_t hsu_collect_frame(const pn532_hsu_t *hsu,
-                                        pn532_rx_frame_t *frame,
-                                        uint32_t started)
+/** @brief Collect one frame, discarding an oversized frame when possible. */
+static pn532_status_t hsu_collect_frame(
+    const hsu_rx_context_t *rx,
+    pn532_rx_frame_t *frame)
 {
-    uint8_t header[PN532_HSU_HEADER_SIZE];
-    size_t used = 0U;
-    size_t expected = 0U;
+    hsu_frame_header_t header = {{0}, 0U, 0U};
     pn532_status_t result;
 
-    result = hsu_find_start(hsu, header, started, frame->timeout_ms);
+    result = hsu_find_start(rx, &header);
     if (result != PN532_STATUS_OK) {
         return result;
     }
-    result = hsu_read_header(hsu, header, &used, &expected,
-                             started, frame->timeout_ms);
+    result = hsu_read_header(rx, &header);
     if (result != PN532_STATUS_OK) {
         return result;
     }
-    if (expected > frame->capacity) {
-        result = hsu_discard(hsu, expected - used, started, frame->timeout_ms);
+    if (header.expected > frame->capacity) {
+        result = hsu_discard(rx, header.expected - header.used);
         return result == PN532_STATUS_OK ? PN532_STATUS_BUFFER_TOO_SMALL : result;
     }
-    memcpy(frame->data, header, used);
-    if (expected > used) {
-        result = hsu_read(hsu, frame->data + used, expected - used,
-                          started, frame->timeout_ms);
+    memcpy(frame->data, header.data, header.used);
+    if (header.expected > header.used) {
+        result = hsu_read(
+            rx, frame->data + header.used, header.expected - header.used);
         if (result != PN532_STATUS_OK) {
             return result;
         }
     }
-    frame->length = expected;
+    frame->length = header.expected;
     return PN532_STATUS_OK;
 }
 
-/** @brief Read one complete PN532 frame under a single overall deadline. */
+/** @brief Receive exactly one PN532 frame with an overall timeout. */
 static pn532_status_t hsu_read_frame(void *context, pn532_rx_frame_t *frame)
 {
     pn532_hsu_t *hsu = (pn532_hsu_t *)context;
+    hsu_rx_context_t rx;
 
     if (frame != NULL) {
         frame->length = 0U;
@@ -193,7 +214,11 @@ static pn532_status_t hsu_read_frame(void *context, pn532_rx_frame_t *frame)
     if (frame->capacity < PN532_FRAME_CONTROL_SIZE) {
         return PN532_STATUS_BUFFER_TOO_SMALL;
     }
-    return hsu_collect_frame(hsu, frame, hsu->io->now_ms(hsu->context));
+
+    rx.hsu = hsu;
+    rx.started_ms = hsu->io->now_ms(hsu->context);
+    rx.timeout_ms = frame->timeout_ms;
+    return hsu_collect_frame(&rx, frame);
 }
 
 pn532_status_t pn532_hsu_init(pn532_hsu_t *hsu,

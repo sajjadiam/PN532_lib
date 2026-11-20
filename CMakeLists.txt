@@ -4,6 +4,7 @@ project(PN532_lib LANGUAGES C)
 add_library(pn532_frame STATIC
     pn532/pn532_frame.c
     pn532/pn532_rx.c
+    pn532/pn532_hsu.c
 )
 target_include_directories(pn532_frame PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/pn532"
@@ -19,4 +20,8 @@ if(BUILD_TESTING)
     add_executable(pn532_rx_tests tests/test_pn532_rx.c)
     target_link_libraries(pn532_rx_tests PRIVATE pn532_frame)
     add_test(NAME pn532_rx_tests COMMAND pn532_rx_tests)
+
+    add_executable(pn532_hsu_tests tests/test_pn532_hsu.c)
+    target_link_libraries(pn532_hsu_tests PRIVATE pn532_frame)
+    add_test(NAME pn532_hsu_tests COMMAND pn532_hsu_tests)
 endif()

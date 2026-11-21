@@ -27,7 +27,7 @@ typedef struct {
 } mock_uart_t;
 
 static pn532_status_t mock_tx_start(
-    void *ctx, const uint8_t *data, size_t len)
+    void *ctx, const uint8_t *data, uint16_t len)
 {
     mock_uart_t *m = ctx;
     if (data == NULL || m->tx_busy) return PN532_STATUS_BUSY;
@@ -53,7 +53,7 @@ static pn532_status_t mock_tx_abort(void *ctx)
     return PN532_STATUS_OK;
 }
 static pn532_hsu_rx_result_t mock_rx_read(
-    void *ctx, uint8_t *buffer, size_t capacity)
+    void *ctx, uint8_t *buffer, uint16_t capacity)
 {
     mock_uart_t *m = ctx;
     pn532_hsu_rx_result_t result = {PN532_STATUS_OK, 0U};

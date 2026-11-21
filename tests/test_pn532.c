@@ -712,7 +712,7 @@ static void test_recovery_success(void)
     CHECK(pn532_recover(&device, &recovery) == PN532_STATUS_OK);
     CHECK(pn532_submit(&device, &command) == PN532_STATUS_BUSY);
     CHECK(observer.calls == 1U);
-    run_steps(&device, 9U);
+    run_steps(&device, 10U);
     CHECK(fake.recovery_control_frames == 1U);
     CHECK(fake.flushes == 1U);
     CHECK(observer.calls == 2U);
@@ -748,7 +748,7 @@ static void test_recovery_invalid_firmware(void)
     fake.ack_ready = true;
     fake.response_ready = true;
     CHECK(pn532_recover(&device, &recovery) == PN532_STATUS_OK);
-    run_steps(&device, 9U);
+    run_steps(&device, 10U);
     CHECK(observer.calls == 1U);
     CHECK(observer.last.result == PN532_RESULT_UNEXPECTED_RESPONSE);
     CHECK(pn532_submit(&device, &command) == PN532_STATUS_IO_ERROR);

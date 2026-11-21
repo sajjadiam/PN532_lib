@@ -1,5 +1,5 @@
 /**
- * @file pn532_hsu_async.c
+ * @file pn532_hsu.c
  * @brief Cooperative, bounded PN532 HSU transport.
  */
 #include "pn532_hsu.h"
@@ -148,7 +148,7 @@ static pn532_status_t hsu_rx_byte(
 {
     pn532_frame_span_t prefix;
     pn532_frame_result_t result;
-    size_t expected;
+    uint16_t expected;
 
     if (!device->sync_found) {
         if (device->sync_a == 0U &&
@@ -188,7 +188,7 @@ static pn532_status_t hsu_rx_byte(
 static pn532_async_result_t hsu_poll_rx(void *context)
 {
     pn532_hsu_t *device = (pn532_hsu_t *)context;
-    size_t processed;
+    uint16_t processed;
 
     if (!hsu_ready(device)) {
         return hsu_result(PN532_ASYNC_FAILED,
@@ -251,7 +251,7 @@ pn532_status_t pn532_hsu_init(
     pn532_hsu_t *device,
     const pn532_hsu_io_t *io,
     void *context,
-    size_t rx_budget)
+    uint16_t rx_budget)
 {
     if (device == NULL || io == NULL ||
         io->tx_start == NULL || io->tx_poll == NULL ||

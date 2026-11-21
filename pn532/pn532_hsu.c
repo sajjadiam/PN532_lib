@@ -1,262 +1,274 @@
 /**
- * @file pn532_hsu.c
- * @brief PN532 HSU transport with bounded, staged reads and sync recovery.
+ * @file pn532_hsu_async.c
+ * @brief Cooperative, bounded PN532 HSU transport.
  */
 #include "pn532_hsu.h"
 #include "pn532_rx.h"
-
 #include <string.h>
 
-#define PN532_HSU_HEADER_SIZE 8U
-#define PN532_HSU_DISCARD_SIZE 32U
-#define PN532_HSU_MAX_TIMEOUT_MS UINT32_C(0x7FFFFFFF)
+#define PN532_HSU_MAX_TIMEOUT UINT32_C(0x7FFFFFFF)
 
-/**
- * @brief One receive operation's immutable timeout and UART context.
- *
- * @note Shared by RX helpers to avoid repeating the same arguments.
- */
-typedef struct {
-    const pn532_hsu_t *hsu;
-    uint32_t started_ms;
-    uint32_t timeout_ms;
-} hsu_rx_context_t;
-
-/** @brief Partially received header and the expected full frame length. */
-typedef struct {
-    uint8_t data[PN532_HSU_HEADER_SIZE];
-    size_t used;
-    size_t expected;
-} hsu_frame_header_t;
-
-/** @brief Map unsupported platform statuses to an I/O error. */
-static pn532_status_t hsu_io_status(pn532_status_t status)
+/** @brief Create an operation-state snapshot. */
+static pn532_async_result_t hsu_result(
+    pn532_async_state_t state, pn532_status_t status)
 {
-    if (status == PN532_STATUS_OK || status == PN532_STATUS_TIMEOUT ||
-        status == PN532_STATUS_IO_ERROR) {
-        return status;
-    }
-    return PN532_STATUS_IO_ERROR;
-}
-
-/** @brief Remaining time for this receive operation, including timer wrap. */
-static uint32_t hsu_remaining(const hsu_rx_context_t *rx)
-{
-    const uint32_t elapsed = rx->hsu->io->now_ms(rx->hsu->context)
-                             - rx->started_ms;
-
-    return elapsed >= rx->timeout_ms ? 0U : rx->timeout_ms - elapsed;
-}
-
-/** @brief Read an exact number of bytes within the shared deadline. */
-static pn532_status_t hsu_read(
-    const hsu_rx_context_t *rx,
-    uint8_t *data,
-    size_t count)
-{
-    pn532_hsu_rx_t request = {data, count, hsu_remaining(rx)};
-
-    if (request.timeout_ms == 0U) {
-        return PN532_STATUS_TIMEOUT;
-    }
-    return hsu_io_status(rx->hsu->io->read_exact(
-        rx->hsu->context, &request));
-}
-
-/** @brief Find 00 00 FF without waiting past the operation deadline. */
-static pn532_status_t hsu_find_start(
-    const hsu_rx_context_t *rx,
-    hsu_frame_header_t *header)
-{
-    uint8_t a = 0xFFU;
-    uint8_t b = 0xFFU;
-    uint8_t current;
-    pn532_status_t result;
-
-    while (hsu_remaining(rx) != 0U) {
-        result = hsu_read(rx, &current, 1U);
-        if (result != PN532_STATUS_OK) {
-            return result;
-        }
-        if (a == 0U && b == 0U && current == 0xFFU) {
-            header->data[0] = 0U;
-            header->data[1] = 0U;
-            header->data[2] = 0xFFU;
-            header->used = 3U;
-            return PN532_STATUS_OK;
-        }
-        a = b;
-        b = current;
-    }
-    return PN532_STATUS_TIMEOUT;
-}
-
-/** @brief Consume a known number of unread bytes after buffer overflow. */
-static pn532_status_t hsu_discard(
-    const hsu_rx_context_t *rx,
-    size_t bytes)
-{
-    uint8_t scratch[PN532_HSU_DISCARD_SIZE];
-
-    while (bytes != 0U) {
-        const size_t chunk = bytes < sizeof(scratch) ? bytes : sizeof(scratch);
-        const pn532_status_t result = hsu_read(rx, scratch, chunk);
-
-        if (result != PN532_STATUS_OK) {
-            return result;
-        }
-        bytes -= chunk;
-    }
-    return PN532_STATUS_OK;
-}
-
-/** @brief Receive enough header bytes to determine the entire frame size. */
-static pn532_status_t hsu_read_header(
-    const hsu_rx_context_t *rx,
-    hsu_frame_header_t *header)
-{
-    pn532_frame_span_t prefix = {header->data, header->used};
-    pn532_frame_result_t status;
-    size_t next;
-
-    /* Prefix strictly increases on every successful read (max. 8 bytes). */
-    while (prefix.length <= sizeof(header->data)) {
-        status = pn532_frame_rx_plan(&prefix, PN532_FRAME_MAX_SIZE, &next);
-        if (status == PN532_FRAME_OK) {
-            header->expected = prefix.length;
-            return PN532_STATUS_OK;
-        }
-        if (status != PN532_FRAME_NEED_MORE_DATA) {
-            return PN532_STATUS_FRAME_ERROR;
-        }
-        if (next > sizeof(header->data) - prefix.length) {
-            header->expected = prefix.length + next;
-            return PN532_STATUS_OK;
-        }
-
-        const pn532_status_t result = hsu_read(
-            rx, header->data + prefix.length, next);
-        if (result != PN532_STATUS_OK) {
-            return result;
-        }
-        prefix.length += next;
-        header->used = prefix.length;
-    }
-    return PN532_STATUS_FRAME_ERROR;
-}
-
-/** @brief Transmit one raw canonical PN532 frame without retries. */
-static pn532_status_t hsu_write_frame(void *context, const pn532_tx_frame_t *frame)
-{
-    pn532_hsu_t *hsu = (pn532_hsu_t *)context;
-    pn532_hsu_tx_t request;
-
-    if (hsu == NULL || hsu->io == NULL || hsu->io->write_exact == NULL ||
-        frame == NULL || frame->data == NULL ||
-        frame->length < PN532_FRAME_CONTROL_SIZE ||
-        frame->length > PN532_FRAME_MAX_SIZE ||
-        frame->timeout_ms == 0U || frame->timeout_ms > PN532_HSU_MAX_TIMEOUT_MS) {
-        return PN532_STATUS_INVALID_ARGUMENT;
-    }
-    request.data = frame->data;
-    request.length = frame->length;
-    request.timeout_ms = frame->timeout_ms;
-    return hsu_io_status(hsu->io->write_exact(hsu->context, &request));
-}
-
-/** @brief Collect one frame, discarding an oversized frame when possible. */
-static pn532_status_t hsu_collect_frame(
-    const hsu_rx_context_t *rx,
-    pn532_rx_frame_t *frame)
-{
-    hsu_frame_header_t header = {{0}, 0U, 0U};
-    pn532_status_t result;
-
-    result = hsu_find_start(rx, &header);
-    if (result != PN532_STATUS_OK) {
-        return result;
-    }
-    result = hsu_read_header(rx, &header);
-    if (result != PN532_STATUS_OK) {
-        return result;
-    }
-    if (header.expected > frame->capacity) {
-        result = hsu_discard(rx, header.expected - header.used);
-        return result == PN532_STATUS_OK ? PN532_STATUS_BUFFER_TOO_SMALL : result;
-    }
-    memcpy(frame->data, header.data, header.used);
-    if (header.expected > header.used) {
-        result = hsu_read(
-            rx, frame->data + header.used, header.expected - header.used);
-        if (result != PN532_STATUS_OK) {
-            return result;
-        }
-    }
-    frame->length = header.expected;
-    return PN532_STATUS_OK;
-}
-
-/** @brief Receive exactly one PN532 frame with an overall timeout. */
-static pn532_status_t hsu_read_frame(void *context, pn532_rx_frame_t *frame)
-{
-    pn532_hsu_t *hsu = (pn532_hsu_t *)context;
-    hsu_rx_context_t rx;
-
-    if (frame != NULL) {
-        frame->length = 0U;
-    }
-    if (hsu == NULL || hsu->io == NULL || hsu->io->read_exact == NULL ||
-        hsu->io->now_ms == NULL || frame == NULL || frame->data == NULL ||
-        frame->capacity == 0U || frame->timeout_ms == 0U ||
-        frame->timeout_ms > PN532_HSU_MAX_TIMEOUT_MS) {
-        return PN532_STATUS_INVALID_ARGUMENT;
-    }
-    if (frame->capacity < PN532_FRAME_CONTROL_SIZE) {
-        return PN532_STATUS_BUFFER_TOO_SMALL;
-    }
-
-    rx.hsu = hsu;
-    rx.started_ms = hsu->io->now_ms(hsu->context);
-    rx.timeout_ms = frame->timeout_ms;
-    return hsu_collect_frame(&rx, frame);
-}
-
-pn532_status_t pn532_hsu_init(pn532_hsu_t *hsu,
-                              const pn532_hsu_io_t *io, void *context)
-{
-    if (hsu == NULL || io == NULL || io->read_exact == NULL ||
-        io->write_exact == NULL || io->now_ms == NULL) {
-        return PN532_STATUS_INVALID_ARGUMENT;
-    }
-    hsu->io = io;
-    hsu->context = context;
-    return PN532_STATUS_OK;
-}
-
-pn532_status_t pn532_hsu_wakeup(
-    pn532_hsu_t *hsu, const pn532_hsu_wakeup_t *wake)
-{
-    static const uint8_t dummy = 0x55U;
-    pn532_hsu_tx_t request;
-    pn532_status_t result;
-
-    if (hsu == NULL || hsu->io == NULL || hsu->io->write_exact == NULL ||
-        hsu->io->delay_ms == NULL || wake == NULL ||
-        wake->tx_timeout_ms == 0U || wake->settle_ms == 0U ||
-        wake->tx_timeout_ms > PN532_HSU_MAX_TIMEOUT_MS) {
-        return PN532_STATUS_INVALID_ARGUMENT;
-    }
-    request.data = &dummy;
-    request.length = 1U;
-    request.timeout_ms = wake->tx_timeout_ms;
-    result = hsu_io_status(hsu->io->write_exact(hsu->context, &request));
-    if (result == PN532_STATUS_OK) {
-        hsu->io->delay_ms(hsu->context, wake->settle_ms);
-    }
+    pn532_async_result_t result = {state, status};
     return result;
 }
 
+/** @brief Test elapsed time across uint32_t tick rollover. */
+static bool hsu_expired(uint32_t now, uint32_t started, uint32_t period)
+{
+    return (uint32_t)(now - started) >= period;
+}
+
+/** @brief Validate instance and clock without touching hardware. */
+static bool hsu_ready(const pn532_hsu_t *device)
+{
+    return device != NULL && device->io != NULL &&
+           device->io->now_ms != NULL;
+}
+
+/** @brief Record a failed RX operation and request a nonblocking flush. */
+static pn532_async_result_t hsu_rx_fail(
+    pn532_hsu_t *device, pn532_status_t error)
+{
+    device->rx->length = 0U;
+    device->rx_result = hsu_result(PN532_ASYNC_FAILED, error);
+    (void)device->io->rx_flush(device->context);
+    return device->rx_result;
+}
+
+/** @brief Accept one caller-owned TX buffer for asynchronous transmission. */
+static pn532_status_t hsu_start_tx(
+    void *context, const pn532_tx_frame_t *frame)
+{
+    pn532_hsu_t *device = (pn532_hsu_t *)context;
+    pn532_status_t result;
+
+    if (!hsu_ready(device) || frame == NULL || frame->data == NULL ||
+        frame->length < PN532_FRAME_CONTROL_SIZE ||
+        frame->length > PN532_FRAME_MAX_SIZE ||
+        frame->timeout_ms == 0U ||
+        frame->timeout_ms > PN532_HSU_MAX_TIMEOUT) {
+        return PN532_STATUS_INVALID_ARGUMENT;
+    }
+    if (device->tx_result.state == PN532_ASYNC_BUSY) {
+        return PN532_STATUS_BUSY;
+    }
+
+    result = device->io->tx_start(
+        device->context, frame->data, frame->length);
+    if (result != PN532_STATUS_OK) {
+        return result;
+    }
+    device->tx = *frame;
+    device->tx_started = device->io->now_ms(device->context);
+    device->tx_abort_pending = false;
+    device->tx_abort_reason = PN532_STATUS_OK;
+    device->tx_result = hsu_result(PN532_ASYNC_BUSY, PN532_STATUS_OK);
+    return PN532_STATUS_OK;
+}
+
+/** @brief Request TX abort while preserving ownership until terminal poll. */
+static void hsu_request_tx_abort(
+    pn532_hsu_t *device, pn532_status_t reason)
+{
+    if (device->tx_result.state != PN532_ASYNC_BUSY ||
+        device->tx_abort_pending) {
+        return;
+    }
+    device->tx_abort_pending = true;
+    device->tx_abort_reason = reason;
+    (void)device->io->tx_abort(device->context);
+}
+
+/** @brief Observe TX completion; never waits for DMA or UART TC. */
+static pn532_async_result_t hsu_poll_tx(void *context)
+{
+    pn532_hsu_t *device = (pn532_hsu_t *)context;
+    pn532_async_result_t status;
+
+    if (!hsu_ready(device)) {
+        return hsu_result(PN532_ASYNC_FAILED,
+                          PN532_STATUS_INVALID_ARGUMENT);
+    }
+    if (device->tx_result.state != PN532_ASYNC_BUSY) {
+        return device->tx_result;
+    }
+    status = device->io->tx_poll(device->context);
+    if (status.state == PN532_ASYNC_DONE ||
+        status.state == PN532_ASYNC_FAILED) {
+        device->tx_result = device->tx_abort_pending
+            ? hsu_result(PN532_ASYNC_FAILED, device->tx_abort_reason)
+            : status;
+        return device->tx_result;
+    }
+    if (status.state != PN532_ASYNC_BUSY) {
+        hsu_request_tx_abort(device, PN532_STATUS_IO_ERROR);
+    }
+    if (hsu_expired(device->io->now_ms(device->context),
+                    device->tx_started, device->tx.timeout_ms)) {
+        hsu_request_tx_abort(device, PN532_STATUS_TIMEOUT);
+    }
+    return device->tx_result;
+}
+
+/** @brief Arm a receive frame buffer before sending a command. */
+static pn532_status_t hsu_start_rx(
+    void *context, pn532_rx_frame_t *frame)
+{
+    pn532_hsu_t *device = (pn532_hsu_t *)context;
+
+    if (!hsu_ready(device) || frame == NULL || frame->data == NULL ||
+        frame->capacity < PN532_FRAME_CONTROL_SIZE ||
+        frame->timeout_ms == 0U ||
+        frame->timeout_ms > PN532_HSU_MAX_TIMEOUT) {
+        return PN532_STATUS_INVALID_ARGUMENT;
+    }
+    if (device->rx_result.state == PN532_ASYNC_BUSY) {
+        return PN532_STATUS_BUSY;
+    }
+    /* Do not flush on each receive: ACK and Response can be queued back-to-back. */
+    frame->length = 0U;
+    device->rx = frame;
+    device->rx_used = 0U;
+    device->rx_expected = 0U;
+    device->sync_a = 0xFFU;
+    device->sync_b = 0xFFU;
+    device->sync_found = false;
+    device->rx_started = device->io->now_ms(device->context);
+    device->rx_result = hsu_result(PN532_ASYNC_BUSY, PN532_STATUS_OK);
+    return PN532_STATUS_OK;
+}
+
+/** @brief Feed one byte through the frame sync and length probe. */
+static pn532_status_t hsu_rx_byte(
+    pn532_hsu_t *device, uint8_t value)
+{
+    pn532_frame_span_t prefix;
+    pn532_frame_result_t result;
+    size_t expected;
+
+    if (!device->sync_found) {
+        if (device->sync_a == 0U &&
+            device->sync_b == 0U && value == 0xFFU) {
+            device->rx->data[0] = 0x00U;
+            device->rx->data[1] = 0x00U;
+            device->rx->data[2] = 0xFFU;
+            device->rx_used = 3U;
+            device->sync_found = true;
+        }
+        device->sync_a = device->sync_b;
+        device->sync_b = value;
+        return PN532_STATUS_OK;
+    }
+    if (device->rx_used >= device->rx->capacity) {
+        return PN532_STATUS_BUFFER_TOO_SMALL;
+    }
+    device->rx->data[device->rx_used++] = value;
+    prefix.data = device->rx->data;
+    prefix.length = device->rx_used;
+
+    result = pn532_frame_probe(&prefix, &expected);
+    if (result == PN532_FRAME_NEED_MORE_DATA) {
+        return PN532_STATUS_OK;
+    }
+    if (result != PN532_FRAME_OK) {
+        return PN532_STATUS_FRAME_ERROR;
+    }
+    if (expected > device->rx->capacity) {
+        return PN532_STATUS_BUFFER_TOO_SMALL;
+    }
+    device->rx_expected = expected;
+    return PN532_STATUS_OK;
+}
+
+/** @brief Receive a bounded number of available bytes without waiting. */
+static pn532_async_result_t hsu_poll_rx(void *context)
+{
+    pn532_hsu_t *device = (pn532_hsu_t *)context;
+    size_t processed;
+
+    if (!hsu_ready(device)) {
+        return hsu_result(PN532_ASYNC_FAILED,
+                          PN532_STATUS_INVALID_ARGUMENT);
+    }
+    if (device->rx_result.state != PN532_ASYNC_BUSY) {
+        return device->rx_result;
+    }
+    if (hsu_expired(device->io->now_ms(device->context),
+                    device->rx_started, device->rx->timeout_ms)) {
+        return hsu_rx_fail(device, PN532_STATUS_TIMEOUT);
+    }
+
+    for (processed = 0U; processed < device->rx_budget; ++processed) {
+        uint8_t value = 0U;
+        pn532_hsu_rx_result_t received =
+            device->io->rx_read(device->context, &value, 1U);
+        pn532_status_t status;
+
+        if (received.status != PN532_STATUS_OK) {
+            return hsu_rx_fail(device, received.status);
+        }
+        if (received.count == 0U) {
+            break;
+        }
+        if (received.count != 1U) {
+            return hsu_rx_fail(device, PN532_STATUS_IO_ERROR);
+        }
+        status = hsu_rx_byte(device, value);
+        if (status != PN532_STATUS_OK) {
+            return hsu_rx_fail(device, status);
+        }
+        if (device->rx_expected != 0U &&
+            device->rx_used == device->rx_expected) {
+            device->rx->length = device->rx_used;
+            device->rx_result = hsu_result(
+                PN532_ASYNC_DONE, PN532_STATUS_OK);
+            return device->rx_result;
+        }
+    }
+    return device->rx_result;
+}
+
+/** @brief Request cancellation of RX and TX operations without waiting. */
+static pn532_status_t hsu_abort(void *context)
+{
+    pn532_hsu_t *device = (pn532_hsu_t *)context;
+
+    if (!hsu_ready(device)) {
+        return PN532_STATUS_INVALID_ARGUMENT;
+    }
+    if (device->rx_result.state == PN532_ASYNC_BUSY) {
+        (void)hsu_rx_fail(device, PN532_STATUS_CANCELLED);
+    }
+    hsu_request_tx_abort(device, PN532_STATUS_CANCELLED);
+    return PN532_STATUS_OK;
+}
+
+pn532_status_t pn532_hsu_init(
+    pn532_hsu_t *device,
+    const pn532_hsu_io_t *io,
+    void *context,
+    size_t rx_budget)
+{
+    if (device == NULL || io == NULL ||
+        io->tx_start == NULL || io->tx_poll == NULL ||
+        io->tx_abort == NULL || io->rx_read == NULL ||
+        io->rx_flush == NULL || io->now_ms == NULL ||
+        rx_budget == 0U || rx_budget > PN532_FRAME_MAX_SIZE) {
+        return PN532_STATUS_INVALID_ARGUMENT;
+    }
+    memset(device, 0, sizeof(*device));
+    device->io = io;
+    device->context = context;
+    device->rx_budget = rx_budget;
+    device->tx_result = hsu_result(PN532_ASYNC_IDLE, PN532_STATUS_OK);
+    device->rx_result = hsu_result(PN532_ASYNC_IDLE, PN532_STATUS_OK);
+    return PN532_STATUS_OK;
+}
+
 const pn532_transport_ops_t pn532_hsu_transport_ops = {
-    hsu_write_frame,
-    hsu_read_frame
+    hsu_start_tx, hsu_poll_tx, hsu_start_rx, hsu_poll_rx, hsu_abort
 };

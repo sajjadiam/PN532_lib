@@ -19,12 +19,12 @@ static unsigned int failures;
 /** @brief Feed successive canonical header/payload sections to planner. */
 static void test_sequence(
     const uint8_t *data,
-    size_t length,
-    const size_t *chunks,
+    uint16_t length,
+    const uint16_t *chunks,
     size_t chunk_count)
 {
     pn532_frame_span_t prefix = {data, 0U};
-    size_t next = 0U;
+    uint16_t next = 0U;
     size_t i;
 
     for (i = 0U; i < chunk_count; ++i) {
@@ -48,10 +48,10 @@ static void test_complete_frames(void)
     const uint8_t extended[275] = {
         0x00, 0x00, 0xFF, 0xFF, 0xFF, 0x01, 0x09, 0xF6
     };
-    const size_t control_steps[] = {3U, 2U, 1U};
-    const size_t error_steps[] = {3U, 2U, 3U};
-    const size_t normal_steps[] = {3U, 2U, 4U};
-    const size_t extended_steps[] = {3U, 2U, 3U, 267U};
+    const uint16_t control_steps[] = {3U, 2U, 1U};
+    const uint16_t error_steps[] = {3U, 2U, 3U};
+    const uint16_t normal_steps[] = {3U, 2U, 4U};
+    const uint16_t extended_steps[] = {3U, 2U, 3U, 267U};
 
     test_sequence(ack, sizeof(ack), control_steps, 3U);
     test_sequence(nack, sizeof(nack), control_steps, 3U);
@@ -66,7 +66,7 @@ static void test_limits_and_bad_headers(void)
     uint8_t bytes[10] = {0x00, 0x00, 0xFF, 0x02, 0xFE,
                          0xD4, 0x02, 0x2A, 0x00, 0x00};
     pn532_frame_span_t prefix = {bytes, 0U};
-    size_t next = 77U;
+    uint16_t next = 77U;
 
     CHECK(pn532_frame_rx_plan(NULL, 275U, &next) ==
           PN532_FRAME_INVALID_ARGUMENT && next == 0U);

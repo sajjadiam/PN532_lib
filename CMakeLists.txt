@@ -5,6 +5,7 @@ add_library(pn532_frame STATIC
     pn532/pn532_frame.c
     pn532/pn532_rx.c
     pn532/pn532_hsu.c
+    pn532/pn532.c
 )
 target_include_directories(pn532_frame PUBLIC
     "${CMAKE_CURRENT_SOURCE_DIR}/pn532"

@@ -7,7 +7,7 @@
  * matching and command deadlines. The transport owns UART byte I/O.
  *
  * No heap allocation, RTOS dependency or hardware-specific API is used.
- * Recovery is declared here; its cooperative implementation is pending.
+ * Recovery uses a host ACK abort and a verified firmware response.
  */
 #ifndef PN532_H
 #define PN532_H
@@ -173,6 +173,7 @@ struct pn532 {
     uint8_t state;                      /**< Private state-machine encoding. */
     bool cancel_pending;                /**< Host cancellation requested. */
     bool recovery_required;             /**< Protocol synchronization lost. */
+    bool recovery_active;               /**< Internal recovery verification active. */
 };
 
 /**
@@ -258,7 +259,7 @@ void pn532_process(pn532_t *device);
  *
  * @note Does not call board reset_set() and does not retry application
  * commands. The transport must not have a pending TX buffer when idle.
- * @note Declared API; implementation will follow in pn532.c.
+ * @note The terminal callback never exposes verification response data.
  */
 pn532_status_t pn532_recover(
     pn532_t *device,
@@ -266,7 +267,7 @@ pn532_status_t pn532_recover(
 );
 
 /**
- * @brief Request nonblocking cancellation of the active command.
+ * @brief Request nonblocking cancellation of the active operation.
  *
  * @details Cancellation may require additional calls to process()
  * before the transport stops referencing TX storage. A completion

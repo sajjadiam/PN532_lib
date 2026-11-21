@@ -24,6 +24,8 @@ typedef struct {
     bool ack_ready;
     bool response_ready;
     bool use_nack;
+    bool fail_tx_start;
+    unsigned fail_rx_start_at;
     uint8_t ack[PN532_FRAME_CONTROL_SIZE];
     uint8_t nack[PN532_FRAME_CONTROL_SIZE];
     uint8_t response[PN532_FRAME_MAX_SIZE];
@@ -44,6 +46,7 @@ static pn532_status_t fake_start_tx(void *context, const pn532_tx_frame_t *frame
     fake_t *fake = (fake_t *)context;
     if (fake->tx_pending || frame == NULL || frame->data == NULL)
         return PN532_STATUS_BUSY;
+    if (fake->fail_tx_start) return PN532_STATUS_IO_ERROR;
     fake->tx_pending = true;
     fake->aborted = false;
     ++fake->starts_tx;
@@ -70,6 +73,8 @@ static pn532_status_t fake_start_rx(void *context, pn532_rx_frame_t *frame)
     fake_t *fake = (fake_t *)context;
     if (fake->rx_pending || frame == NULL)
         return PN532_STATUS_BUSY;
+    if (fake->fail_rx_start_at == fake->starts_rx + 1U)
+        return PN532_STATUS_IO_ERROR;
     fake->rx = frame;
     fake->rx_pending = true;
     ++fake->starts_rx;
@@ -503,6 +508,163 @@ static void test_deferred_abort_lifetime(void)
     CHECK(pn532_submit(&device, &command) == PN532_STATUS_IO_ERROR);
 }
 
+/**
+ * @brief Cancellation before TX acceptance is recoverable even after RX
+ * has been armed; no command bytes were sent.
+ */
+static void test_cancel_armed_rx(void)
+{
+    fake_t fake;
+    pn532_t device;
+    observer_t observer = {0};
+    uint8_t tx[PN532_FRAME_MAX_SIZE];
+    uint8_t rx[PN532_FRAME_MAX_SIZE];
+    pn532_command_t command = firmware_command(&observer);
+
+    fixture(&fake, &device, tx, rx);
+    CHECK(pn532_submit(&device, &command) == PN532_STATUS_OK);
+    pn532_process(&device);
+    CHECK(fake.starts_rx == 1U);
+    CHECK(fake.rx_pending);
+    CHECK(pn532_cancel(&device) == PN532_STATUS_OK);
+    pn532_process(&device);
+    CHECK(fake.aborts == 1U);
+    CHECK(!fake.rx_pending);
+    CHECK(fake.starts_tx == 0U);
+    CHECK(observer.calls == 0U);
+    pn532_process(&device);
+    CHECK(observer.calls == 1U);
+    CHECK(observer.last.result == PN532_RESULT_CANCELLED);
+    CHECK(pn532_submit(&device, &command) == PN532_STATUS_OK);
+}
+
+/** @brief Cancellation after transmit completion must lock new requests. */
+static void test_cancel_waiting_ack(void)
+{
+    fake_t fake;
+    pn532_t device;
+    observer_t observer = {0};
+    uint8_t tx[PN532_FRAME_MAX_SIZE];
+    uint8_t rx[PN532_FRAME_MAX_SIZE];
+    pn532_command_t command = firmware_command(&observer);
+
+    fixture(&fake, &device, tx, rx);
+    fake.tx_done = true;
+    CHECK(pn532_submit(&device, &command) == PN532_STATUS_OK);
+    run_steps(&device, 3U);
+    CHECK(fake.starts_tx == 1U);
+    CHECK(pn532_cancel(&device) == PN532_STATUS_OK);
+    pn532_process(&device);
+    CHECK(fake.aborts == 1U);
+    CHECK(observer.calls == 0U);
+    pn532_process(&device);
+    CHECK(observer.calls == 1U);
+    CHECK(observer.last.result == PN532_RESULT_CANCELLED);
+    CHECK(pn532_submit(&device, &command) == PN532_STATUS_IO_ERROR);
+}
+
+/** @brief ACK then cancellation before response is protocol-uncertain. */
+static void test_cancel_waiting_response(void)
+{
+    fake_t fake;
+    pn532_t device;
+    observer_t observer = {0};
+    uint8_t tx[PN532_FRAME_MAX_SIZE];
+    uint8_t rx[PN532_FRAME_MAX_SIZE];
+    pn532_command_t command = firmware_command(&observer);
+
+    fixture(&fake, &device, tx, rx);
+    fake.tx_done = true;
+    fake.ack_ready = true;
+    CHECK(pn532_submit(&device, &command) == PN532_STATUS_OK);
+    run_steps(&device, 5U);
+    CHECK(fake.starts_rx == 2U);
+    CHECK(fake.rx_pending);
+    CHECK(pn532_cancel(&device) == PN532_STATUS_OK);
+    pn532_process(&device);
+    CHECK(fake.aborts == 1U);
+    CHECK(!fake.rx_pending);
+    pn532_process(&device);
+    CHECK(observer.calls == 1U);
+    CHECK(observer.last.result == PN532_RESULT_CANCELLED);
+    CHECK(pn532_submit(&device, &command) == PN532_STATUS_IO_ERROR);
+}
+
+/** @brief A valid PN532 application-error frame ends without recovery. */
+static void test_device_error_clean_terminal(void)
+{
+    fake_t fake;
+    pn532_t device;
+    observer_t observer = {0};
+    uint8_t tx[PN532_FRAME_MAX_SIZE];
+    uint8_t rx[PN532_FRAME_MAX_SIZE];
+    pn532_command_t command = firmware_command(&observer);
+    const uint8_t error_frame[PN532_FRAME_ERROR_SIZE] = {
+        0x00U, 0x00U, 0xFFU, 0x01U, 0xFFU, 0x7FU, 0x81U, 0x00U
+    };
+
+    fixture(&fake, &device, tx, rx);
+    memcpy(fake.response, error_frame, sizeof(error_frame));
+    fake.response_size = sizeof(error_frame);
+    fake.tx_done = true;
+    fake.ack_ready = true;
+    fake.response_ready = true;
+    CHECK(pn532_submit(&device, &command) == PN532_STATUS_OK);
+    run_steps(&device, 7U);
+    CHECK(observer.calls == 1U);
+    CHECK(observer.last.result == PN532_RESULT_DEVICE_ERROR);
+    CHECK(observer.last.response_length == 0U);
+    CHECK(fake.aborts == 0U);
+    CHECK(pn532_submit(&device, &command) == PN532_STATUS_OK);
+}
+
+/** @brief RX or TX acceptance failures must not leave stale RX ownership. */
+static void test_transport_start_failures(void)
+{
+    fake_t fake;
+    pn532_t device;
+    observer_t observer = {0};
+    uint8_t tx[PN532_FRAME_MAX_SIZE];
+    uint8_t rx[PN532_FRAME_MAX_SIZE];
+    pn532_command_t command = firmware_command(&observer);
+
+    fixture(&fake, &device, tx, rx);
+    fake.fail_rx_start_at = 1U;
+    CHECK(pn532_submit(&device, &command) == PN532_STATUS_OK);
+    run_steps(&device, 2U);
+    CHECK(observer.calls == 1U);
+    CHECK(observer.last.result == PN532_RESULT_TRANSPORT_ERROR);
+    CHECK(observer.last.transport_status == PN532_STATUS_IO_ERROR);
+    CHECK(fake.aborts == 0U);
+    CHECK(fake.starts_tx == 0U);
+    CHECK(pn532_submit(&device, &command) == PN532_STATUS_IO_ERROR);
+
+    fixture(&fake, &device, tx, rx);
+    fake.fail_tx_start = true;
+    CHECK(pn532_submit(&device, &command) == PN532_STATUS_OK);
+    run_steps(&device, 3U);
+    CHECK(observer.calls == 2U);
+    CHECK(observer.last.result == PN532_RESULT_TRANSPORT_ERROR);
+    CHECK(observer.last.transport_status == PN532_STATUS_IO_ERROR);
+    CHECK(fake.starts_tx == 0U);
+    CHECK(fake.aborts == 1U);
+    CHECK(!fake.rx_pending);
+    CHECK(pn532_submit(&device, &command) == PN532_STATUS_IO_ERROR);
+
+    fixture(&fake, &device, tx, rx);
+    fake.fail_rx_start_at = 2U;
+    fake.tx_done = true;
+    fake.ack_ready = true;
+    CHECK(pn532_submit(&device, &command) == PN532_STATUS_OK);
+    run_steps(&device, 6U);
+    CHECK(observer.calls == 3U);
+    CHECK(observer.last.result == PN532_RESULT_TRANSPORT_ERROR);
+    CHECK(observer.last.transport_status == PN532_STATUS_IO_ERROR);
+    CHECK(fake.starts_rx == 1U);
+    CHECK(fake.aborts == 1U);
+    CHECK(pn532_submit(&device, &command) == PN532_STATUS_IO_ERROR);
+}
+
 int main(void)
 {
     test_success();
@@ -516,6 +678,11 @@ int main(void)
     test_rx_overrun();
     test_deadline_rollover();
     test_deferred_abort_lifetime();
+    test_cancel_armed_rx();
+    test_cancel_waiting_ack();
+    test_cancel_waiting_response();
+    test_device_error_clean_terminal();
+    test_transport_start_failures();
     printf("PN532 Core: %u checks, %u failures\\n", checks, failures);
     return failures == 0U ? 0 : 1;
 }

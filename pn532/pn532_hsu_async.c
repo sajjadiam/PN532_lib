@@ -119,7 +119,6 @@ static pn532_status_t hsu_start_rx(
     void *context, pn532_rx_frame_t *frame)
 {
     pn532_hsu_async_t *device = (pn532_hsu_async_t *)context;
-    pn532_status_t status;
 
     if (!hsu_ready(device) || frame == NULL || frame->data == NULL ||
         frame->capacity < PN532_FRAME_CONTROL_SIZE ||
@@ -130,11 +129,7 @@ static pn532_status_t hsu_start_rx(
     if (device->rx_result.state == PN532_ASYNC_BUSY) {
         return PN532_STATUS_BUSY;
     }
-    status = device->io->rx_flush(device->context);
-    if (status != PN532_STATUS_OK) {
-        return status;
-    }
-
+    /* Do not flush on each receive: ACK and Response can be queued back-to-back. */
     frame->length = 0U;
     device->rx = frame;
     device->rx_used = 0U;

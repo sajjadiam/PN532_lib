@@ -7,7 +7,7 @@
  * matching and command deadlines. The transport owns UART byte I/O.
  *
  * No heap allocation, RTOS dependency or hardware-specific API is used.
- * This header defines the Core contract; pn532.c is not yet implemented.
+ * Recovery is declared here; its cooperative implementation is pending.
  */
 #ifndef PN532_H
 #define PN532_H
@@ -43,9 +43,10 @@ typedef enum {
 /**
  * @brief Command completion delivered in task/main-loop context.
  *
- * @details On success, response points to bytes AFTER the response code
- * (PD0), and response_length excludes PD0. A response without additional
- * bytes has a NULL pointer and zero length.
+ * @details On successful command completion, response points to bytes
+ * AFTER the response code (PD0); response_length excludes PD0. If no
+ * additional bytes exist, the pointer is NULL and the length is zero.
+ * Recovery completion always has NULL response and zero length.
  *
  * The response points into caller-provided RX storage; it is valid until
  * the next accepted command or until the Core is reinitialized. Applications
@@ -63,7 +64,7 @@ typedef struct {
 } pn532_completion_t;
 
 /**
- * @brief Invoked exactly once for each successfully accepted command.
+ * @brief Invoked exactly once for each accepted command or recovery request.
  *
  * @note Always invoked by pn532_process(), never from an ISR,
  * pn532_submit() or pn532_cancel(). Do not call Core APIs for the same
@@ -92,6 +93,27 @@ typedef struct {
     pn532_complete_fn on_complete; /**< Required terminal callback. */
     void *user;                   /**< Opaque callback context. */
 } pn532_command_t;
+
+/**
+ * @brief Nonblocking protocol recovery request.
+ *
+ * @details Recovery uses a host ACK frame to stop PN532 command processing,
+ * waits for physical UART TC, purges stale RX bytes through the transport,
+ * then validates synchronization using GetFirmwareVersion (0x02).
+ * No previously accepted application command is automatically retried.
+ *
+ * response_timeout_ms is the verification command's response deadline,
+ * starting after its valid ACK. TX and ACK deadlines are configured in
+ * pn532_config_t. All nonzero timeouts must be below 2^31 ms.
+ *
+ * Recovery requires the transport's flush_rx operation. Hardware reset
+ * and optional board RST/IRQ signaling are not part of this initial path.
+ */
+typedef struct {
+    uint32_t response_timeout_ms; /**< Verification response deadline. */
+    pn532_complete_fn on_complete; /**< Required terminal callback. */
+    void *user;                    /**< Opaque callback context. */
+} pn532_recovery_request_t;
 
 /**
  * @brief Caller-provided contiguous frame storage.
@@ -193,7 +215,8 @@ pn532_status_t pn532_submit(
 /**
  * @brief Advance one bounded cooperative step of command processing.
  *
- * @details Never waits for UART input, DMA or elapsed deadlines.
+ * @details Advances the active command or recovery operation without
+ * waiting for UART input, DMA or elapsed deadlines.
  * Must be called regularly even when no IRQ is generated. RX processing
  * remains bounded by the HSU adapter's configured byte budget.
  *
@@ -206,6 +229,41 @@ pn532_status_t pn532_submit(
  * At most one completion callback is issued per invocation.
  */
 void pn532_process(pn532_t *device);
+
+/**
+ * @brief Start asynchronous PN532 protocol recovery or explicit link check.
+ *
+ * @details Accepted only when no command or recovery operation is active.
+ * Uses the PN532 host ACK cancellation frame, waits until UART transmission
+ * is physically complete, flushes the local RX queue while transport is
+ * idle, then validates the link with GetFirmwareVersion (0x02).
+ *
+ * The device is considered synchronized only after a valid matching
+ * verification response. Failure keeps recovery_required asserted and
+ * pn532_submit() blocked. Recovery success does not prove a previously
+ * interrupted command had no application-level side effects.
+ *
+ * A successful acceptance schedules exactly one terminal callback,
+ * delivered from pn532_process() in task context. The callback uses the
+ * standard pn532_completion_t result/status fields, with response NULL
+ * and response_length zero. Reentrant calls for the same instance from
+ * inside the callback are not supported.
+ *
+ * @param[in,out] device Initialized, idle PN532 instance.
+ * @param[in] request Recovery callback and verification response timeout.
+ * @retval PN532_STATUS_OK Accepted; completion will be asynchronous.
+ * @retval PN532_STATUS_BUSY Another operation is active.
+ * @retval PN532_STATUS_INVALID_ARGUMENT Invalid instance or request.
+ * @retval PN532_STATUS_UNSUPPORTED Transport lacks flush_rx.
+ *
+ * @note Does not call board reset_set() and does not retry application
+ * commands. The transport must not have a pending TX buffer when idle.
+ * @note Declared API; implementation will follow in pn532.c.
+ */
+pn532_status_t pn532_recover(
+    pn532_t *device,
+    const pn532_recovery_request_t *request
+);
 
 /**
  * @brief Request nonblocking cancellation of the active command.

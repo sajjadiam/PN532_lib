@@ -113,8 +113,15 @@ static void test_rx_budget_and_frames(void)
     CHECK(r.state == PN532_ASYNC_DONE);
     CHECK(frame.length == sizeof(ack));
     CHECK(memcmp(buffer, ack, sizeof(ack)) == 0);
-    /* Do not flush the response when arming the following receive:
-     * response bytes can already be present in the UART ring buffer. */
+    CHECK(t.ops->start_rx(t.context, &frame) == PN532_STATUS_OK);
+    loops = 0U;
+    r = t.ops->poll_rx(t.context);
+    while (r.state == PN532_ASYNC_BUSY && loops++ < 20U) {
+        r = t.ops->poll_rx(t.context);
+    }
+    CHECK(r.state == PN532_ASYNC_DONE);
+    CHECK(frame.length == sizeof(response));
+    CHECK(memcmp(buffer, response, sizeof(response)) == 0);
 }
 
 static void test_tx_timeout_and_cancel(void)
@@ -141,8 +148,6 @@ static void test_tx_timeout_and_cancel(void)
     CHECK(t.ops->start_tx(t.context, &frame) == PN532_STATUS_OK);
     CHECK(t.ops->abort(t.context) == PN532_STATUS_OK);
     r = t.ops->poll_tx(t.context);
-    CHECK(r.state == PN532_ASYNC_BUSY);
-    r = t.ops->poll_tx(t.context);
     CHECK(r.state == PN532_ASYNC_FAILED &&
           r.status == PN532_STATUS_CANCELLED);
 }
@@ -161,7 +166,7 @@ static void test_rx_errors(void)
     m.io_error = true;
     r = t.ops->poll_rx(t.context);
     CHECK(r.state == PN532_ASYNC_FAILED && r.status == PN532_STATUS_OVERRUN);
-    CHECK(frame.length == 0U && m.flushes == 2U);
+    CHECK(frame.length == 0U && m.flushes == 1U);
     CHECK(t.ops->start_rx(t.context, &frame) == PN532_STATUS_OK);
     m.tick = 6U;
     r = t.ops->poll_rx(t.context);

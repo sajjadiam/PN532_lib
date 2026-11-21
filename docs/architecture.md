@@ -1,7 +1,7 @@
 # PN532 architecture: Async HSU contract (draft v0.1)
 
 ## Scope
-Portable C11, instance-based and heap-free. Only HSU/UART is in scope for v0.1; I2C and SPI are future work. The existing frame encoder/decoder and receive-length planner are pure CPU functions and remain unchanged.
+Portable C11, instance-based and heap-free. Only HSU/UART is in scope for v0.1; I2C and SPI are future work. The frame encoder/decoder and receive-length planner are pure CPU functions and remain unchanged. The repository contains only one HSU transport implementation, in pn532_hsu.h/.c, and one transport contract, in pn532_transport.h.
 
 ## Nonblocking invariants
 - No hardware callback may sleep, spin, wait for DMA/IRQ completion, or invoke an application callback.
@@ -33,8 +33,8 @@ Portable C11, instance-based and heap-free. Only HSU/UART is in scope for v0.1; 
 - Any combination (neither / RST / IRQ / both) must work. Optional H_REQ handshaking and advanced low-power modes are deferred.
 
 ## API and implementation sequence
-1. Formalize transport and board API and tests.
-2. Implement HSU nonblocking adapter and UART simulator tests.
+1. Formalize transport and board API and tests (implemented).
+2. Implement HSU nonblocking adapter and UART simulator tests (initial version; hardware validation pending).
 3. Implement asynchronous Core request/ACK/response state machine.
 4. Hardware-in-the-loop GetFirmwareVersion verification.
 5. Consider I2C/SPI after HSU stabilization.

@@ -74,7 +74,7 @@ typedef enum {
  */
 typedef struct {
     const uint8_t *data; /**< First byte, or NULL when length is zero. */
-    size_t length;       /**< Number of available bytes. */
+    uint16_t length;       /**< Number of available bytes. */
 } pn532_frame_span_t;
 
 /**
@@ -84,8 +84,8 @@ typedef struct {
  */
 typedef struct {
     uint8_t *data; /**< Storage provided by the caller. */
-    size_t capacity; /**< Available storage in bytes. */
-    size_t length; /**< Encoded byte count; output. */
+    uint16_t capacity; /**< Available storage in bytes. */
+    uint16_t length; /**< Encoded byte count; output. */
 } pn532_frame_buffer_t;
 
 /**
@@ -97,7 +97,7 @@ typedef struct {
 typedef struct {
     uint8_t tfi;         /**< PN532_FRAME_TFI_HOST or PN532_FRAME_TFI_DEVICE. */
     const uint8_t *data; /**< PD0 followed by optional data bytes. */
-    size_t length;       /**< PD byte count, from 1 through 264. */
+    uint16_t length;       /**< PD byte count, from 1 through 264. */
 } pn532_frame_message_t;
 
 /**
@@ -116,7 +116,7 @@ typedef struct {
     pn532_frame_type_t type; /**< Decoded frame category. */
     uint8_t tfi;             /**< TFI for information frames; otherwise zero. */
     const uint8_t *data;     /**< Read-only PD0 pointer, if applicable. */
-    size_t length;           /**< PD byte count, excluding TFI. */
+    uint16_t length;           /**< PD byte count, excluding TFI. */
 } pn532_frame_view_t;
 
 /**
@@ -195,7 +195,7 @@ pn532_frame_result_t pn532_frame_encode_control(
  */
 pn532_frame_result_t pn532_frame_probe(
     const pn532_frame_span_t *prefix,
-    size_t *frame_size
+    uint16_t *frame_size
 );
 
 /**

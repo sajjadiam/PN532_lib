@@ -26,7 +26,7 @@ static void test_control_and_error(void)
     pn532_frame_buffer_t out = {bytes, sizeof(bytes), 99U};
     pn532_frame_span_t in = {bytes, 0U};
     pn532_frame_view_t view;
-    size_t expected = 0U;
+    uint16_t expected = 0U;
 
     CHECK(pn532_frame_encode_control(PN532_FRAME_TYPE_ACK, &out) == PN532_FRAME_OK);
     CHECK(out.length == sizeof(ack) && memcmp(bytes, ack, sizeof(ack)) == 0);
@@ -79,7 +79,7 @@ static void test_all_lengths(void)
     pn532_frame_buffer_t out = {bytes, PN532_FRAME_MAX_SIZE, 0U};
     pn532_frame_span_t in = {bytes, 0U};
     pn532_frame_view_t view;
-    size_t expected = 0U;
+    uint16_t expected = 0U;
     size_t i;
 
     for (i = 0U; i < sizeof(payload); ++i) {
@@ -124,7 +124,7 @@ static void test_partial_and_corrupt(void)
     pn532_frame_buffer_t out = {bytes, PN532_FRAME_MAX_SIZE, 0U};
     pn532_frame_span_t in = {bytes, 0U};
     pn532_frame_view_t view;
-    size_t expected = 0U;
+    uint16_t expected = 0U;
     size_t i;
 
     CHECK(pn532_frame_encode(&msg, &out) == PN532_FRAME_OK);
@@ -172,7 +172,7 @@ static void test_invalid_arguments(void)
     pn532_frame_message_t msg = {PN532_FRAME_TFI_HOST, &code, 1U};
     pn532_frame_span_t in = {NULL, 0U};
     pn532_frame_view_t view;
-    size_t expected = 99U;
+    uint16_t expected = 99U;
 
     CHECK(pn532_frame_encode(NULL, &out) == PN532_FRAME_INVALID_ARGUMENT);
     CHECK(out.length == 0U);

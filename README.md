@@ -20,13 +20,12 @@ PN532_lib aims to provide a hardware-independent interface for PN532-based embed
 |---|---|
 | Normal / extended frames, ACK / NACK, parsing | Implemented and host-tested |
 | Receive-length planning | Implemented and host-tested |
-| HSU/UART synchronous adapter | Existing legacy implementation; being superseded |
-| HSU/UART asynchronous transport | Under development |
+| HSU/UART nonblocking transport | Implemented; host-tested, hardware validation pending |
 | Command-level asynchronous core | Planned |
 | Optional RST / IRQ board integration | Contract specified; implementation pending |
 | I2C and SPI | Deferred to future releases |
 
-The working main branch still contains a synchronous HSU adapter. It must **not** be described as nonblocking until the new adapter is fully implemented and tested.
+Only the nonblocking HSU transport is maintained. The command-level Core is not yet implemented; do not treat this as a complete NFC application library.
 
 ## Architecture and contracts
 

@@ -5,7 +5,7 @@
 #include "pn532_rx.h"
 
 /** @brief Determine the next header boundary required by the frame probe. */
-static size_t pn532_rx_header_target(size_t received)
+static uint16_t pn532_rx_header_target(uint16_t received)
 {
     if (received < 3U) {
         return 3U;
@@ -18,11 +18,11 @@ static size_t pn532_rx_header_target(size_t received)
 
 pn532_frame_result_t pn532_frame_rx_plan(
     const pn532_frame_span_t *prefix,
-    size_t capacity,
-    size_t *next_bytes)
+    uint16_t capacity,
+    uint16_t *next_bytes)
 {
     pn532_frame_result_t result;
-    size_t target = 0U;
+    uint16_t target = 0U;
 
     if (next_bytes != NULL) {
         *next_bytes = 0U;
@@ -51,6 +51,6 @@ pn532_frame_result_t pn532_frame_rx_plan(
         return PN532_FRAME_OK;
     }
 
-    *next_bytes = target - prefix->length;
+    *next_bytes = (uint16_t)(target - prefix->length);
     return PN532_FRAME_NEED_MORE_DATA;
 }

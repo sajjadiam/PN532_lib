@@ -48,8 +48,8 @@ extern "C" {
  */
 pn532_frame_result_t pn532_frame_rx_plan(
     const pn532_frame_span_t *prefix,
-    size_t capacity,
-    size_t *next_bytes
+    uint16_t capacity,
+    uint16_t *next_bytes
 );
 
 #ifdef __cplusplus

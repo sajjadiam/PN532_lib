@@ -10,6 +10,7 @@
 
 #include "pn532_transport_async.h"
 #include "pn532_frame.h"
+#include <stdbool.h>
 
 #ifdef __cplusplus
 extern "C" {

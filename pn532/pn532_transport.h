@@ -33,7 +33,11 @@ typedef enum {
     PN532_STATUS_TIMEOUT,          /**< Operation did not finish in time. */
     PN532_STATUS_IO_ERROR,         /**< Platform communication failure. */
     PN532_STATUS_BUFFER_TOO_SMALL, /**< Receive buffer cannot hold the frame. */
-    PN532_STATUS_FRAME_ERROR       /**< Frame boundary could not be recovered. */
+    PN532_STATUS_FRAME_ERROR,      /**< Frame boundary could not be recovered. */
+    PN532_STATUS_BUSY,             /**< Operation already active. */
+    PN532_STATUS_CANCELLED,        /**< Accepted operation was cancelled. */
+    PN532_STATUS_UNSUPPORTED,      /**< Optional operation unavailable. */
+    PN532_STATUS_OVERRUN           /**< UART RX overrun/lost bytes. */
 } pn532_status_t;
 
 /**

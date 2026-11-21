@@ -131,8 +131,17 @@ static uint32_t fake_now(void *context)
     return ((fake_t *)context)->tick;
 }
 
+static pn532_status_t fake_flush_rx(void *context)
+{
+    fake_t *fake = (fake_t *)context;
+    if (fake->tx_pending || fake->rx_pending) return PN532_STATUS_BUSY;
+    fake->rx_error = PN532_STATUS_OK;
+    return PN532_STATUS_OK;
+}
+
 static const pn532_transport_ops_t fake_ops = {
-    fake_start_tx, fake_poll_tx, fake_start_rx, fake_poll_rx, fake_abort
+    fake_start_tx, fake_poll_tx, fake_start_rx, fake_poll_rx,
+    fake_abort, fake_flush_rx
 };
 
 static void completed(void *context, const pn532_completion_t *completion)

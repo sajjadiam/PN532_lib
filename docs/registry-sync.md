@@ -11,9 +11,9 @@ No NFC card data is written or emulated by this registry module.
 ## Implemented now
 
 The public \`pn532_registry.h\` interface exposes:
-- Stable server-assigned \`credential_id\` (not computed from a card UID).
-- \`dataset_id\` to invalidate cursors after server-side rebuilds or generation changes.
-- Ordered, strictly contiguous \`revision\` values and \`UPSERT\`/\`REMOVE\` changes.
+- Stable server-assigned 32-bit \`credential_id\` (not computed from a card UID). Server-side 64-bit primary keys must be mapped to unique 32-bit device IDs, never truncated.
+- 32-bit \`dataset_id\` to invalidate cursors after server-side rebuilds or generation changes. Dataset IDs must not be reused across snapshots within one deployment.
+- Ordered, strictly contiguous 32-bit \`revision\` values and \`UPSERT\`/\`REMOVE\` changes. Rotate dataset and install a new snapshot before revision overflow.
 - A caller-supplied \`apply_atomic(context, delta)\` function. A storage adapter must persist **the record change and the new revision together**, returning success only after a durable commit.
 - Duplicate revision suppression and gap/generation detection; gaps request a full snapshot.
 - Explicit BUSY/storage-error results with no cursor advancement.
@@ -28,6 +28,8 @@ The public \`pn532_registry.h\` interface exposes:
 - Outbound observation-event queue, monotonic event IDs, server de-duplication and timestamps.
 - Access policy freshness bounds and offline fail-open/fail-closed decision policy.
 
+The public initialization API takes a cursor plus a \`pn532_registry_config_t\` with the persisted dataset/revision, callback and context. All IDs and revisions in this embedded API are \`uint32_t\`; no 64-bit arithmetic is required for cursor progression.
+
 The registry is a **delta-validation and commit coordinator**, not a complete replicated database. Its test storage has only four slots by design; that is a test constraint, not a library limit.
 
 ## Synchronization rules
@@ -37,7 +39,7 @@ The registry is a **delta-validation and commit coordinator**, not a complete re
 3. Apply exactly the next revision for the same dataset. Treat older revisions as already applied, and version gaps or dataset changes as requiring snapshot repair.
 4. For a successful callback, acknowledge the delta to the server **after** storage commit. For BUSY, retry without advancing. On storage error, do not acknowledge.
 5. Never serialize the in-memory C structs directly; use a defined portable network encoding and authenticate the server message before calling this API.
-6. When the stream approaches \`UINT64_MAX\`, start a new dataset generation via a snapshot. Revisions do not wrap.
+6. Before reaching \`UINT32_MAX\`, install a new snapshot under a fresh never-reused dataset generation. Do not allow either revision or dataset identity to wrap/reuse.
 7. Each reader's PN532 protocol recovery is independent. A failed reader must not corrupt the MCU-wide cursor or other readers.
 
 ## Security and identity caveats

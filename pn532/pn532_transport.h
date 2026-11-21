@@ -38,7 +38,7 @@ typedef enum {
  */
 typedef struct {
     const uint8_t *data; /**< Complete canonical PN532 frame. */
-    size_t length;       /**< Number of bytes. */
+    uint16_t length;       /**< Number of bytes. */
     uint32_t timeout_ms; /**< TX deadline relative to acceptance. */
 } pn532_tx_frame_t;
 
@@ -50,8 +50,8 @@ typedef struct {
  */
 typedef struct {
     uint8_t *data;       /**< Complete canonical PN532 frame destination. */
-    size_t capacity;     /**< Destination capacity. */
-    size_t length;       /**< Received length; output. */
+    uint16_t capacity;     /**< Destination capacity. */
+    uint16_t length;       /**< Received length; output. */
     uint32_t timeout_ms; /**< RX deadline relative to acceptance. */
 } pn532_rx_frame_t;
 

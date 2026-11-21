@@ -24,7 +24,7 @@ extern "C" {
  */
 typedef struct {
     pn532_status_t status; /**< OK or I/O error / overrun. */
-    size_t count;          /**< Bytes copied; never greater than capacity. */
+    uint16_t count;          /**< Bytes copied; never greater than capacity. */
 } pn532_hsu_rx_result_t;
 
 /**
@@ -45,11 +45,11 @@ typedef struct {
  */
 typedef struct {
     pn532_status_t (*tx_start)(
-        void *context, const uint8_t *data, size_t length);
+        void *context, const uint8_t *data, uint16_t length);
     pn532_async_result_t (*tx_poll)(void *context);
     pn532_status_t (*tx_abort)(void *context);
     pn532_hsu_rx_result_t (*rx_read)(
-        void *context, uint8_t *data, size_t capacity);
+        void *context, uint8_t *data, uint16_t capacity);
     pn532_status_t (*rx_flush)(void *context);
     uint32_t (*now_ms)(void *context);
 } pn532_hsu_io_t;
@@ -67,9 +67,9 @@ typedef struct {
     pn532_rx_frame_t *rx;           /**< Active caller-owned RX descriptor. */
     uint32_t tx_started;            /**< TX acceptance timestamp. */
     uint32_t rx_started;            /**< RX acceptance timestamp. */
-    size_t rx_used;                 /**< Received prefix size. */
-    size_t rx_expected;             /**< Expected complete frame size. */
-    size_t rx_budget;               /**< Maximum RX bytes processed per poll. */
+    uint16_t rx_used;                 /**< Received prefix size. */
+    uint16_t rx_expected;             /**< Expected complete frame size. */
+    uint16_t rx_budget;               /**< Maximum RX bytes processed per poll. */
     uint8_t sync_a;                 /**< UART sync history. */
     uint8_t sync_b;                 /**< UART sync history. */
     bool sync_found;                /**< Start marker already found. */
@@ -93,7 +93,7 @@ pn532_status_t pn532_hsu_init(
     pn532_hsu_t *device,
     const pn532_hsu_io_t *io,
     void *context,
-    size_t rx_budget
+    uint16_t rx_budget
 );
 
 /** @brief Async transport operations; bind context to a device instance. */

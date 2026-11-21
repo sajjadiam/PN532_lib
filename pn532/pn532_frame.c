@@ -53,7 +53,7 @@ static pn532_frame_result_t pn532_frame_probe_extended(
     if ((uint8_t)((unsigned int)data[5] + data[6] + data[7]) != 0U) {
         return PN532_FRAME_CHECKSUM_ERROR;
     }
-    length = ((uint16_t)data[5] << 8U) | (uint16_t)data[6];
+    length = (uint16_t)(((unsigned int)data[5] << 8U) | data[6]);
     if (length < 2U || length > PN532_FRAME_MAX_PAYLOAD_SIZE + 1U) {
         return PN532_FRAME_INVALID_LENGTH;
     }
@@ -235,7 +235,7 @@ static pn532_frame_result_t pn532_frame_decode_data(
     const int extended = data[3] == 0xFFU && data[4] == 0xFFU;
     const uint16_t offset = extended ? 8U : 5U;
     const uint16_t length = extended
-                            ? ((uint16_t)data[5] << 8U) | (uint16_t)data[6]
+                            ? (uint16_t)(((unsigned int)data[5] << 8U) | data[6])
                             : (uint16_t)data[3];
     uint8_t checksum = 0U;
     uint16_t index;

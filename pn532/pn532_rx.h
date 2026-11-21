@@ -46,11 +46,7 @@ extern "C" {
  *       before passing the prefix to this function.
  * @warning PN532_FRAME_OK does not imply a valid payload checksum.
  */
-pn532_frame_result_t pn532_frame_rx_plan(
-    const pn532_frame_span_t *prefix,
-    uint16_t capacity,
-    uint16_t *next_bytes
-);
+pn532_frame_result_t pn532_frame_rx_plan(const pn532_frame_span_t *prefix, uint16_t capacity, uint16_t *next_bytes);
 
 #ifdef __cplusplus
 }

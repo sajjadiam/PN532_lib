@@ -34,10 +34,8 @@ extern "C" {
  * The caller owns the context and keeps it valid for the device lifetime.
  */
 typedef struct {
-    pn532_status_t (*reset_set)(
-        void *context, bool asserted); /**< Optional logical reset output. */
-    bool (*irq_take)(
-        void *context); /**< Optional atomic take-and-clear IRQ event. */
+    pn532_status_t (*reset_set)(void *context, bool asserted); /**< Optional logical reset output. */
+    bool (*irq_take)(void *context); /**< Optional atomic take-and-clear IRQ event. */
     void *context;       /**< Shared board GPIO context. */
 } pn532_board_io_t;
 

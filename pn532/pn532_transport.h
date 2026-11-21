@@ -96,11 +96,9 @@ typedef struct {
  * responsibility of the platform UART implementation.
  */
 typedef struct {
-    pn532_status_t (*start_tx)(
-        void *context, const pn532_tx_frame_t *frame);
+    pn532_status_t (*start_tx)(void *context, const pn532_tx_frame_t *frame);
     pn532_async_result_t (*poll_tx)(void *context);
-    pn532_status_t (*start_rx)(
-        void *context, pn532_rx_frame_t *frame);
+    pn532_status_t (*start_rx)(void *context, pn532_rx_frame_t *frame);
     pn532_async_result_t (*poll_rx)(void *context);
     pn532_status_t (*abort)(void *context);
 } pn532_transport_ops_t;

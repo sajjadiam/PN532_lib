@@ -44,12 +44,10 @@ typedef struct {
  * now_ms is a free-running wrapping monotonic uint32_t millisecond clock.
  */
 typedef struct {
-    pn532_status_t (*tx_start)(
-        void *context, const uint8_t *data, uint16_t length);
+    pn532_status_t (*tx_start)(void *context, const uint8_t *data, uint16_t length);
     pn532_async_result_t (*tx_poll)(void *context);
     pn532_status_t (*tx_abort)(void *context);
-    pn532_hsu_rx_result_t (*rx_read)(
-        void *context, uint8_t *data, uint16_t capacity);
+    pn532_hsu_rx_result_t (*rx_read)(void *context, uint8_t *data, uint16_t capacity);
     pn532_status_t (*rx_flush)(void *context);
     uint32_t (*now_ms)(void *context);
 } pn532_hsu_io_t;
@@ -89,12 +87,7 @@ typedef struct {
  * @retval PN532_STATUS_OK Initialized.
  * @retval PN532_STATUS_INVALID_ARGUMENT Missing callback or invalid budget.
  */
-pn532_status_t pn532_hsu_init(
-    pn532_hsu_t *device,
-    const pn532_hsu_io_t *io,
-    void *context,
-    uint16_t rx_budget
-);
+pn532_status_t pn532_hsu_init(pn532_hsu_t *device, const pn532_hsu_io_t *io, void *context, uint16_t rx_budget);
 
 /** @brief Async transport operations; bind context to a device instance. */
 extern const pn532_transport_ops_t pn532_hsu_transport_ops;

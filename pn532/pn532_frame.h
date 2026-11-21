@@ -221,10 +221,7 @@ pn532_frame_result_t pn532_frame_probe(
  *
  * @warning The input buffer must outlive any use of the returned view.
  */
-pn532_frame_result_t pn532_frame_decode(
-    const pn532_frame_span_t *input,
-    pn532_frame_view_t *view
-);
+pn532_frame_result_t pn532_frame_decode(const pn532_frame_span_t *input, pn532_frame_view_t *view);
 
 #ifdef __cplusplus
 }

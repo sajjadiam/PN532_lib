@@ -26,6 +26,10 @@ typedef struct {
     bool use_nack;
     bool fail_tx_start;
     unsigned fail_rx_start_at;
+    unsigned ack_rx_index;
+    unsigned flushes;
+    unsigned recovery_control_frames;
+    bool fail_flush;
     uint8_t ack[PN532_FRAME_CONTROL_SIZE];
     uint8_t nack[PN532_FRAME_CONTROL_SIZE];
     uint8_t response[PN532_FRAME_MAX_SIZE];
@@ -49,6 +53,10 @@ static pn532_status_t fake_start_tx(void *context, const pn532_tx_frame_t *frame
     if (fake->fail_tx_start) return PN532_STATUS_IO_ERROR;
     fake->tx_pending = true;
     fake->aborted = false;
+    if (frame->length == PN532_FRAME_CONTROL_SIZE &&
+        memcmp(frame->data, fake->ack, PN532_FRAME_CONTROL_SIZE) == 0) {
+        ++fake->recovery_control_frames;
+    }
     ++fake->starts_tx;
     return PN532_STATUS_OK;
 }
@@ -95,7 +103,7 @@ static pn532_async_result_t fake_poll_rx(void *context)
         return result;
     }
 
-    if (fake->starts_rx == 1U) {
+    if (fake->starts_rx == fake->ack_rx_index) {
         if (!fake->ack_ready) return result;
         bytes = fake->use_nack ? fake->nack : fake->ack;
         length = PN532_FRAME_CONTROL_SIZE;
@@ -135,6 +143,8 @@ static pn532_status_t fake_flush_rx(void *context)
 {
     fake_t *fake = (fake_t *)context;
     if (fake->tx_pending || fake->rx_pending) return PN532_STATUS_BUSY;
+    if (fake->fail_flush) return PN532_STATUS_IO_ERROR;
+    ++fake->flushes;
     fake->rx_error = PN532_STATUS_OK;
     return PN532_STATUS_OK;
 }
@@ -172,6 +182,7 @@ static void fixture(fake_t *fake, pn532_t *device,
     };
 
     memset(fake, 0, sizeof(*fake));
+    fake->ack_rx_index = 1U;
     CHECK(pn532_frame_encode_control(PN532_FRAME_TYPE_ACK,
                                     &(pn532_frame_buffer_t){
                                         fake->ack, sizeof(fake->ack), 0U
@@ -674,6 +685,155 @@ static void test_transport_start_failures(void)
     CHECK(pn532_submit(&device, &command) == PN532_STATUS_IO_ERROR);
 }
 
+/** @brief Recover after ACK timeout and release lock only after firmware check. */
+static void test_recovery_success(void)
+{
+    fake_t fake;
+    pn532_t device;
+    observer_t observer = {0};
+    uint8_t tx[PN532_FRAME_MAX_SIZE];
+    uint8_t rx[PN532_FRAME_MAX_SIZE];
+    pn532_command_t command = firmware_command(&observer);
+    const pn532_recovery_request_t recovery = {30U, completed, &observer};
+
+    fixture(&fake, &device, tx, rx);
+    fake.tx_done = true;
+    CHECK(pn532_submit(&device, &command) == PN532_STATUS_OK);
+    run_steps(&device, 3U);
+    fake.tick = 21U;
+    run_steps(&device, 2U);
+    CHECK(observer.calls == 1U);
+    CHECK(observer.last.result == PN532_RESULT_ACK_TIMEOUT);
+    CHECK(pn532_submit(&device, &command) == PN532_STATUS_IO_ERROR);
+
+    fake.ack_rx_index = 2U;
+    fake.ack_ready = true;
+    fake.response_ready = true;
+    CHECK(pn532_recover(&device, &recovery) == PN532_STATUS_OK);
+    CHECK(pn532_submit(&device, &command) == PN532_STATUS_BUSY);
+    CHECK(observer.calls == 1U);
+    run_steps(&device, 9U);
+    CHECK(fake.recovery_control_frames == 1U);
+    CHECK(fake.flushes == 1U);
+    CHECK(observer.calls == 2U);
+    CHECK(observer.last.result == PN532_RESULT_OK);
+    CHECK(observer.last.response == NULL);
+    CHECK(observer.last.response_length == 0U);
+    CHECK(pn532_submit(&device, &command) == PN532_STATUS_OK);
+}
+
+/** @brief An incorrect firmware ID must leave Core recovery-locked. */
+static void test_recovery_invalid_firmware(void)
+{
+    fake_t fake;
+    pn532_t device;
+    observer_t observer = {0};
+    uint8_t tx[PN532_FRAME_MAX_SIZE];
+    uint8_t rx[PN532_FRAME_MAX_SIZE];
+    pn532_command_t command = firmware_command(&observer);
+    const pn532_recovery_request_t recovery = {30U, completed, &observer};
+    const uint8_t other_ic[] = {0x03U, 0x33U, 0x01U, 0x06U, 0x07U};
+    pn532_frame_buffer_t output;
+    const pn532_frame_message_t message = {
+        PN532_FRAME_TFI_DEVICE, other_ic, sizeof(other_ic)
+    };
+
+    fixture(&fake, &device, tx, rx);
+    output.data = fake.response;
+    output.capacity = sizeof(fake.response);
+    output.length = 0U;
+    CHECK(pn532_frame_encode(&message, &output) == PN532_FRAME_OK);
+    fake.response_size = output.length;
+    fake.tx_done = true;
+    fake.ack_ready = true;
+    fake.response_ready = true;
+    CHECK(pn532_recover(&device, &recovery) == PN532_STATUS_OK);
+    run_steps(&device, 9U);
+    CHECK(observer.calls == 1U);
+    CHECK(observer.last.result == PN532_RESULT_UNEXPECTED_RESPONSE);
+    CHECK(pn532_submit(&device, &command) == PN532_STATUS_IO_ERROR);
+}
+
+/** @brief Flush errors are terminal and prohibit new application commands. */
+static void test_recovery_flush_failure(void)
+{
+    fake_t fake;
+    pn532_t device;
+    observer_t observer = {0};
+    uint8_t tx[PN532_FRAME_MAX_SIZE];
+    uint8_t rx[PN532_FRAME_MAX_SIZE];
+    pn532_command_t command = firmware_command(&observer);
+    const pn532_recovery_request_t recovery = {30U, completed, &observer};
+
+    fixture(&fake, &device, tx, rx);
+    fake.tx_done = true;
+    fake.fail_flush = true;
+    CHECK(pn532_recover(&device, &recovery) == PN532_STATUS_OK);
+    run_steps(&device, 4U);
+    CHECK(observer.calls == 1U);
+    CHECK(observer.last.result == PN532_RESULT_TRANSPORT_ERROR);
+    CHECK(observer.last.transport_status == PN532_STATUS_IO_ERROR);
+    CHECK(fake.recovery_control_frames == 1U);
+    CHECK(fake.starts_rx == 0U);
+    CHECK(pn532_submit(&device, &command) == PN532_STATUS_IO_ERROR);
+}
+
+/** @brief Recovery cancellation during TX must retain DMA-owned storage. */
+static void test_recovery_cancel_deferred(void)
+{
+    fake_t fake;
+    pn532_t device;
+    observer_t observer = {0};
+    uint8_t tx[PN532_FRAME_MAX_SIZE];
+    uint8_t rx[PN532_FRAME_MAX_SIZE];
+    pn532_command_t command = firmware_command(&observer);
+    const pn532_recovery_request_t recovery = {30U, completed, &observer};
+
+    fixture(&fake, &device, tx, rx);
+    fake.abort_deferred = true;
+    CHECK(pn532_recover(&device, &recovery) == PN532_STATUS_OK);
+    pn532_process(&device);
+    CHECK(fake.tx_pending);
+    CHECK(pn532_cancel(&device) == PN532_STATUS_OK);
+    pn532_process(&device);
+    CHECK(fake.aborted);
+    CHECK(observer.calls == 0U);
+    CHECK(pn532_submit(&device, &command) == PN532_STATUS_BUSY);
+    run_steps(&device, 3U);
+    CHECK(observer.calls == 0U);
+    fake.abort_deferred = false;
+    pn532_process(&device);
+    CHECK(!fake.tx_pending);
+    pn532_process(&device);
+    CHECK(observer.calls == 1U);
+    CHECK(observer.last.result == PN532_RESULT_CANCELLED);
+    CHECK(pn532_submit(&device, &command) == PN532_STATUS_IO_ERROR);
+}
+
+/** @brief Optional recovery callback and request validation. */
+static void test_recovery_validation(void)
+{
+    fake_t fake;
+    pn532_t device;
+    observer_t observer = {0};
+    uint8_t tx[PN532_FRAME_MAX_SIZE];
+    uint8_t rx[PN532_FRAME_MAX_SIZE];
+    pn532_command_t command = firmware_command(&observer);
+    const pn532_recovery_request_t valid = {30U, completed, &observer};
+    const pn532_recovery_request_t invalid = {0U, completed, &observer};
+    pn532_transport_ops_t ops = fake_ops;
+
+    fixture(&fake, &device, tx, rx);
+    CHECK(pn532_recover(&device, &invalid) == PN532_STATUS_INVALID_ARGUMENT);
+    CHECK(pn532_recover(&device, NULL) == PN532_STATUS_INVALID_ARGUMENT);
+    ops.flush_rx = NULL;
+    device.config.transport.ops = &ops;
+    CHECK(pn532_recover(&device, &valid) == PN532_STATUS_UNSUPPORTED);
+    device.config.transport.ops = &fake_ops;
+    CHECK(pn532_submit(&device, &command) == PN532_STATUS_OK);
+    CHECK(pn532_recover(&device, &valid) == PN532_STATUS_BUSY);
+}
+
 int main(void)
 {
     test_success();
@@ -692,6 +852,11 @@ int main(void)
     test_cancel_waiting_response();
     test_device_error_clean_terminal();
     test_transport_start_failures();
+    test_recovery_success();
+    test_recovery_invalid_firmware();
+    test_recovery_flush_failure();
+    test_recovery_cancel_deferred();
+    test_recovery_validation();
     printf("PN532 Core: %u checks, %u failures\\n", checks, failures);
     return failures == 0U ? 0 : 1;
 }

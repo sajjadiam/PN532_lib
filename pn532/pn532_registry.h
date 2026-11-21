@@ -29,11 +29,13 @@ typedef struct {
  * @brief One authoritative credential record obtained from the server.
  *
  * @note credential_id is the server-assigned stable database key and must
- * not be derived from the tag UID. Policy interpretation is application-owned.
+ * not be derived from the tag UID. The server assigns a compact 32-bit
+ * credential key (not a truncated UID or a truncated database ID).
+ * Policy interpretation is application-owned.
  */
 typedef struct {
-    uint64_t credential_id;          /**< Nonzero stable server key. */
-    uint64_t policy_id;              /**< Application-defined policy reference. */
+    uint32_t credential_id;          /**< Nonzero stable server key. */
+    uint32_t policy_id;              /**< Application-defined policy reference. */
     pn532_registry_uid_t uid;        /**< ISO14443-A observed identifier. */
     bool enabled;                    /**< Server-controlled credential state. */
 } pn532_registry_record_t;
@@ -51,8 +53,8 @@ typedef enum {
  * are ignored. UPSERT requires a valid Type-A UID and nonzero credential_id.
  */
 typedef struct {
-    uint64_t dataset_id;             /**< Nonzero server dataset generation. */
-    uint64_t revision;               /**< Sequential revision within dataset. */
+    uint32_t dataset_id;             /**< Nonzero server dataset generation. */
+    uint32_t revision;               /**< Sequential revision within dataset. */
     pn532_registry_operation_t operation;
     pn532_registry_record_t record;
 } pn532_registry_delta_t;
@@ -85,32 +87,46 @@ typedef pn532_registry_result_t (*pn532_registry_apply_fn)(
 );
 
 /**
- * @brief Caller-owned registry cursor and storage binding.
+ * @brief Configuration from a durably committed server snapshot.
  *
- * @note dataset_id/revision must match the backend's durable state at init.
- * No arrays, network handles, or persistent buffers are stored here.
+ * @note These are 32-bit application IDs, unrelated to PN532 internal IDs.
+ * The server must rotate dataset_id and atomically install a new snapshot
+ * before revision overflows UINT32_MAX. Dataset generations must not be
+ * reused for the same deployment. The event stream for card observations
+ * is separate; reads do not increment revision.
  */
 typedef struct {
-    uint64_t dataset_id;
-    uint64_t revision;
+    uint32_t dataset_id;             /**< Nonzero dataset generation. */
+    uint32_t persisted_revision;     /**< Committed revision, possibly zero. */
+    pn532_registry_apply_fn apply_atomic;
+    void *storage_context;
+} pn532_registry_config_t;
+
+/**
+ * @brief Caller-owned registry cursor and backend binding.
+ *
+ * @note No arrays, network handles or persistent buffers are stored here.
+ */
+typedef struct {
+    uint32_t dataset_id;
+    uint32_t revision;
     pn532_registry_apply_fn apply_atomic;
     void *storage_context;
 } pn532_registry_t;
 
 /**
- * @brief Bind a previously initialized and verified backend snapshot.
+ * @brief Bind a previously installed and verified backend snapshot.
  *
- * @details On a fresh MCU or dataset change, the application must first
- * install a complete server snapshot atomically and then initialize this
- * cursor with the snapshot's dataset_id and revision. This function does
- * NOT install, download or verify the snapshot itself.
+ * @details The caller installs a complete authenticated snapshot atomically
+ * and supplies its committed dataset_id and revision in config. This
+ * function does not install, fetch or verify a snapshot.
+ *
+ * @param[out] registry Caller-owned cursor.
+ * @param[in] config Persisted cursor and atomic storage callback.
  */
 pn532_registry_result_t pn532_registry_init(
     pn532_registry_t *registry,
-    uint64_t dataset_id,
-    uint64_t persisted_revision,
-    pn532_registry_apply_fn apply_atomic,
-    void *storage_context
+    const pn532_registry_config_t *config
 );
 
 /**

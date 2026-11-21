@@ -176,6 +176,28 @@ static pn532_status_t hsu_abort(void *context) {
     return PN532_STATUS_OK;
 }
 
+/** @brief Purge stale UART RX only after both operations are terminal. */
+static pn532_status_t hsu_flush_rx(void *context) {
+    pn532_hsu_t *device = (pn532_hsu_t *)context;
+    pn532_status_t status;
+
+    if (!hsu_ready(device)) return PN532_STATUS_INVALID_ARGUMENT;
+    if (device->tx_result.state == PN532_ASYNC_BUSY ||
+        device->rx_result.state == PN532_ASYNC_BUSY) return PN532_STATUS_BUSY;
+
+    status = device->io->rx_flush(device->context);
+    if (status != PN532_STATUS_OK) return status;
+
+    device->rx_used = 0U;
+    device->rx_expected = 0U;
+    device->sync_a = 0xFFU;
+    device->sync_b = 0xFFU;
+    device->sync_found = false;
+    if (device->rx != NULL) device->rx->length = 0U;
+    device->rx_result = hsu_result(PN532_ASYNC_IDLE, PN532_STATUS_OK);
+    return PN532_STATUS_OK;
+}
+
 pn532_status_t pn532_hsu_init(pn532_hsu_t *device, const pn532_hsu_io_t *io, void *context, uint16_t rx_budget) {
     if (!device || !io || !io->tx_start || !io->tx_poll ||
         !io->tx_abort || !io->rx_read || !io->rx_flush || !io->now_ms ||
@@ -197,5 +219,6 @@ const pn532_transport_ops_t pn532_hsu_transport_ops = {
     .poll_tx    = hsu_poll_tx, 
     .start_rx   = hsu_start_rx, 
     .poll_rx    = hsu_poll_rx, 
-    .abort      = hsu_abort
+    .abort      = hsu_abort,
+    .flush_rx   = hsu_flush_rx
 };

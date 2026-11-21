@@ -178,11 +178,46 @@ static void test_rx_errors(void)
           r.status == PN532_STATUS_CANCELLED);
 }
 
+static void test_idle_flush_rx(void)
+{
+    mock_uart_t m = {0};
+    pn532_hsu_t hsu;
+    pn532_transport_t t = {&pn532_hsu_transport_ops, &hsu};
+    uint8_t rx_buffer[PN532_FRAME_MAX_SIZE] = {0};
+    const uint8_t tx_bytes[PN532_FRAME_CONTROL_SIZE] = {
+        0x00U, 0x00U, 0xFFU, 0x00U, 0xFFU, 0x00U
+    };
+    pn532_rx_frame_t rx = {
+        rx_buffer, PN532_FRAME_MAX_SIZE, 0U, 200U
+    };
+    const pn532_tx_frame_t tx = {tx_bytes, sizeof(tx_bytes), 200U};
+    const uint8_t stale[] = {0x12U, 0x34U, 0x56U};
+
+    CHECK(pn532_hsu_init(&hsu, &mock_io, &m, 8U) == PN532_STATUS_OK);
+    append(&m, stale, sizeof(stale));
+    CHECK(t.ops->flush_rx(t.context) == PN532_STATUS_OK);
+    CHECK(m.flushes == 1U && m.pos == m.len);
+    CHECK(t.ops->start_rx(t.context, &rx) == PN532_STATUS_OK);
+    CHECK(t.ops->flush_rx(t.context) == PN532_STATUS_BUSY);
+    CHECK(m.flushes == 1U);
+    CHECK(t.ops->abort(t.context) == PN532_STATUS_OK);
+    CHECK(t.ops->flush_rx(t.context) == PN532_STATUS_OK);
+    CHECK(m.flushes == 3U);
+    CHECK(t.ops->start_tx(t.context, &tx) == PN532_STATUS_OK);
+    CHECK(t.ops->flush_rx(t.context) == PN532_STATUS_BUSY);
+    CHECK(m.flushes == 3U);
+    m.tx_complete = true;
+    CHECK(t.ops->poll_tx(t.context).state == PN532_ASYNC_DONE);
+    CHECK(t.ops->flush_rx(t.context) == PN532_STATUS_OK);
+    CHECK(m.flushes == 4U);
+}
+
 int main(void)
 {
     test_rx_budget_and_frames();
     test_tx_timeout_and_cancel();
     test_rx_errors();
+    test_idle_flush_rx();
     printf("PN532 HSU: %u checks, %u failures\n", checks, failures);
     return failures == 0U ? 0 : 1;
 }

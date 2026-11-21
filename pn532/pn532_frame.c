@@ -29,7 +29,7 @@ static pn532_frame_result_t pn532_frame_check_start(
     const pn532_frame_span_t *input)
 {
     const uint8_t *data = input->data;
-    const size_t count = input->length;
+    const uint16_t count = input->length;
 
     if ((count > 0U && data[0] != 0x00U) ||
         (count > 1U && data[1] != 0x00U) ||
@@ -42,10 +42,10 @@ static pn532_frame_result_t pn532_frame_check_start(
 /** @brief Probe the length of a frame using the extended length header. */
 static pn532_frame_result_t pn532_frame_probe_extended(
     const pn532_frame_span_t *input,
-    size_t *frame_size)
+    uint16_t *frame_size)
 {
     const uint8_t *data = input->data;
-    size_t length;
+    uint16_t length;
 
     if (input->length < 8U) {
         return PN532_FRAME_NEED_MORE_DATA;
@@ -53,18 +53,18 @@ static pn532_frame_result_t pn532_frame_probe_extended(
     if ((uint8_t)((unsigned int)data[5] + data[6] + data[7]) != 0U) {
         return PN532_FRAME_CHECKSUM_ERROR;
     }
-    length = ((size_t)data[5] << 8U) | (size_t)data[6];
+    length = ((uint16_t)data[5] << 8U) | (uint16_t)data[6];
     if (length < 2U || length > PN532_FRAME_MAX_PAYLOAD_SIZE + 1U) {
         return PN532_FRAME_INVALID_LENGTH;
     }
-    *frame_size = length + PN532_FRAME_EXT_OVERHEAD;
+    *frame_size = (uint16_t)(length + PN532_FRAME_EXT_OVERHEAD);
     return PN532_FRAME_OK;
 }
 
 /** @brief Probe normal information, ACK/NACK, and error frames. */
 static pn532_frame_result_t pn532_frame_probe_short(
     const uint8_t *data,
-    size_t *frame_size)
+    uint16_t *frame_size)
 {
     if (data[3] == 0x00U) {
         if (data[4] != 0xFFU) {
@@ -83,14 +83,14 @@ static pn532_frame_result_t pn532_frame_probe_short(
         /* Normal LEN=255/LCS=01 is not an extended header. */
         *frame_size = data[3] == 1U
                         ? PN532_FRAME_ERROR_SIZE
-                        : (size_t)data[3] + PN532_FRAME_NORMAL_OVERHEAD;
+                        : (uint16_t)(data[3] + PN532_FRAME_NORMAL_OVERHEAD);
     }
     return PN532_FRAME_OK;
 }
 
 pn532_frame_result_t pn532_frame_probe(
     const pn532_frame_span_t *prefix,
-    size_t *frame_size)
+    uint16_t *frame_size)
 {
     pn532_frame_result_t result;
 
@@ -115,7 +115,7 @@ pn532_frame_result_t pn532_frame_probe(
 }
 
 /** @brief Emit the PN532 header and return the TFI offset. */
-static size_t pn532_frame_write_header(uint8_t *data, size_t length)
+static uint16_t pn532_frame_write_header(uint8_t *data, uint16_t length)
 {
     data[0] = 0x00U;
     data[1] = 0x00U;
@@ -136,11 +136,11 @@ static size_t pn532_frame_write_header(uint8_t *data, size_t length)
 /** @brief Emit TFI, PD bytes, DCS, and postamble. */
 static void pn532_frame_write_data(
     uint8_t *data,
-    size_t offset,
+    uint16_t offset,
     const pn532_frame_message_t *message)
 {
     uint8_t checksum = message->tfi;
-    size_t index;
+    uint16_t index;
 
     data[offset] = message->tfi;
     for (index = 0U; index < message->length; ++index) {
@@ -156,9 +156,9 @@ pn532_frame_result_t pn532_frame_encode(
     const pn532_frame_message_t *message,
     pn532_frame_buffer_t *output)
 {
-    size_t length;
-    size_t overhead;
-    size_t offset;
+    uint16_t length;
+    uint16_t overhead;
+    uint16_t offset;
 
     if (output != NULL) {
         output->length = 0U;
@@ -173,7 +173,7 @@ pn532_frame_result_t pn532_frame_encode(
         message->length > PN532_FRAME_MAX_PAYLOAD_SIZE) {
         return PN532_FRAME_INVALID_LENGTH;
     }
-    length = message->length + 1U;
+    length = (uint16_t)(message->length + 1U);
     overhead = length <= PN532_FRAME_NORMAL_LIMIT
                    ? PN532_FRAME_NORMAL_OVERHEAD : PN532_FRAME_EXT_OVERHEAD;
     if (output->capacity < length + overhead) {
@@ -181,7 +181,7 @@ pn532_frame_result_t pn532_frame_encode(
     }
     offset = pn532_frame_write_header(output->data, length);
     pn532_frame_write_data(output->data, offset, message);
-    output->length = length + overhead;
+    output->length = (uint16_t)(length + overhead);
     return PN532_FRAME_OK;
 }
 
@@ -233,12 +233,12 @@ static pn532_frame_result_t pn532_frame_decode_data(
     pn532_frame_view_t *view)
 {
     const int extended = data[3] == 0xFFU && data[4] == 0xFFU;
-    const size_t offset = extended ? 8U : 5U;
-    const size_t length = extended
-                            ? ((size_t)data[5] << 8U) | (size_t)data[6]
-                            : (size_t)data[3];
+    const uint16_t offset = extended ? 8U : 5U;
+    const uint16_t length = extended
+                            ? ((uint16_t)data[5] << 8U) | (uint16_t)data[6]
+                            : (uint16_t)data[3];
     uint8_t checksum = 0U;
-    size_t index;
+    uint16_t index;
 
     if (data[offset] != PN532_FRAME_TFI_HOST &&
         data[offset] != PN532_FRAME_TFI_DEVICE) {
@@ -253,7 +253,7 @@ static pn532_frame_result_t pn532_frame_decode_data(
     view->type = extended ? PN532_FRAME_TYPE_EXTENDED : PN532_FRAME_TYPE_NORMAL;
     view->tfi = data[offset];
     view->data = data + offset + 1U;
-    view->length = length - 1U;
+    view->length = (uint16_t)(length - 1U);
     return PN532_FRAME_OK;
 }
 
@@ -262,7 +262,7 @@ pn532_frame_result_t pn532_frame_decode(
     pn532_frame_view_t *view)
 {
     pn532_frame_result_t result;
-    size_t expected;
+    uint16_t expected;
     const uint8_t *data;
 
     if (view != NULL) {

@@ -193,7 +193,7 @@ pn532_status_t pn532_hsu_init(pn532_hsu_t *device, const pn532_hsu_io_t *io, voi
 }
 
 const pn532_transport_ops_t pn532_hsu_transport_ops = {
-    .start_rx   = hsu_start_tx, 
+    .start_tx   = hsu_start_tx, 
     .poll_tx    = hsu_poll_tx, 
     .start_rx   = hsu_start_rx, 
     .poll_rx    = hsu_poll_rx, 

@@ -88,6 +88,15 @@ typedef struct {
  * remains in use until poll_tx reaches a terminal state. Aborting does
  * not guarantee that the PN532 has not executed the command.
  *
+ * flush_rx is a nonblocking, local receive-queue purge for recovery.
+ * It discards buffered UART bytes, clears receive framing/error state,
+ * and leaves TX untouched. Call only when TX and RX are both terminal
+ * (no accepted operation is still busy); otherwise it returns BUSY.
+ * On failure, receive synchronization is not guaranteed restored.
+ * It must NOT be used between a valid ACK and its response, since the
+ * response may already be queued. A successful flush does not cancel
+ * PN532 execution or prove application-level synchronization.
+ *
  * These operations do not validate ACK/response command sequencing.
  * Core handles that protocol and command-specific deadlines.
  *
@@ -101,6 +110,7 @@ typedef struct {
     pn532_status_t (*start_rx)(void *context, pn532_rx_frame_t *frame);
     pn532_async_result_t (*poll_rx)(void *context);
     pn532_status_t (*abort)(void *context);
+    pn532_status_t (*flush_rx)(void *context); /**< Idle-only RX purge for recovery. */
 } pn532_transport_ops_t;
 
 /** @brief Transport binding for one independent PN532 instance. */

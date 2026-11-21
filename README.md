@@ -21,16 +21,18 @@ PN532_lib aims to provide a hardware-independent interface for PN532-based embed
 | Normal / extended frames, ACK / NACK, parsing | Implemented and host-tested |
 | Receive-length planning | Implemented and host-tested |
 | HSU/UART nonblocking transport | Implemented; host-tested, hardware validation pending |
-| Command-level asynchronous core | Planned |
+| Command-level asynchronous Core and protocol Recovery | Implemented; host-tested |
+| Credential registry delta coordinator | Implemented; storage and network adapters pending |
+| Multi-reader scheduling and server sync | Architecture defined; implementation pending |
 | Optional RST / IRQ board integration | Contract specified; implementation pending |
 | I2C and SPI | Deferred to future releases |
 
-Only the nonblocking HSU transport is maintained. The command-level Core is not yet implemented; do not treat this as a complete NFC application library.
+The command Core and versioned registry delta contract are host-tested, but real hardware behavior, complete tag APIs, durable storage, and server synchronization still require implementation/validation. Do not treat this as a complete NFC access-control system.
 
 ## Architecture and contracts
 
-See [Async HSU architecture](docs/architecture.md) for the intended transport semantics, bounded processing, buffer ownership, cancel/recovery rules, and optional reset/IRQ wiring.
+See [Async HSU architecture](docs/architecture.md) for transport semantics and [Registry synchronization contract](docs/registry-sync.md) for server-authoritative credential revisions, cache boundaries, and limitations.
 
 ## Testing
 
-Use CMake and CTest to build and run the host-side frame/transport tests. Hardware behavior remains to be verified on a real PN532 module.
+Use CMake and CTest to build and run the host-side frame, transport, Core, Core+HSU integration and registry tests. Hardware behavior remains to be verified on a real PN532 module.

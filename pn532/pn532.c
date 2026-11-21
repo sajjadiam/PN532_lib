@@ -21,6 +21,13 @@
 #define PN532_CORE_WAIT_RESPONSE 7U
 #define PN532_CORE_ABORT_TX      8U
 #define PN532_CORE_NOTIFY        9U
+#define PN532_CORE_RECOVERY_TX   10U
+#define PN532_CORE_RECOVERY_WAIT 11U
+#define PN532_CORE_RECOVERY_FLUSH 12U
+
+/** @brief Fixed protocol-control frame used to stop PN532 processing. */
+static const uint8_t core_firmware_command[] = {0x02U};
+
 
 /** @brief Return a per-instance transport operation table. */
 static const pn532_transport_ops_t *core_ops(const pn532_t *device)
@@ -51,7 +58,7 @@ static bool core_ready(const pn532_t *device)
 {
     return device != NULL &&
            device->state >= PN532_CORE_IDLE &&
-           device->state <= PN532_CORE_NOTIFY &&
+           device->state <= PN532_CORE_RECOVERY_FLUSH &&
            device->config.transport.ops != NULL &&
            device->config.now_ms != NULL;
 }
@@ -123,7 +130,7 @@ static void core_notify(pn532_t *device)
     pn532_complete_fn callback = device->on_complete;
     void *user = device->user;
 
-    if (completion.result == PN532_RESULT_OK) {
+    if (completion.result == PN532_RESULT_OK && !device->recovery_active) {
         pn532_frame_view_t view;
         if (core_decode(device, &view) != PN532_FRAME_OK ||
             view.length == 0U || view.data == NULL) {
@@ -133,6 +140,10 @@ static void core_notify(pn532_t *device)
             completion.response = view.data + 1U;
             completion.response_length = (uint16_t)(view.length - 1U);
         }
+    }
+    if (device->recovery_active) {
+        /* Never expose the internal firmware response to the application. */
+        device->recovery_required = completion.result != PN532_RESULT_OK;
     }
 
     /*
@@ -144,6 +155,7 @@ static void core_notify(pn532_t *device)
     }
     device->on_complete = NULL;
     device->user = NULL;
+    device->recovery_active = false;
     device->state = PN532_CORE_IDLE;
 }
 
@@ -313,6 +325,11 @@ static void core_response_received(pn532_t *device)
                view.data[0] != (uint8_t)(device->command_code + 1U)) {
         core_finish(device, PN532_RESULT_UNEXPECTED_RESPONSE,
                     PN532_STATUS_OK);
+    } else if (device->recovery_active &&
+               (view.length != 5U || view.data[1] != 0x32U)) {
+        /* GetFirmwareVersion must return IC, version, revision, support. */
+        core_finish(device, PN532_RESULT_UNEXPECTED_RESPONSE,
+                    PN532_STATUS_OK);
     } else {
         core_finish(device, PN532_RESULT_OK,
                     PN532_STATUS_OK);
@@ -353,6 +370,118 @@ static void core_wait_rx(pn532_t *device, bool ack_phase)
     }
 }
 
+/** @brief Begin nonblocking protocol cancellation without touching RX. */
+static void core_recovery_start(pn532_t *device)
+{
+    pn532_frame_buffer_t frame = {
+        device->config.tx_storage.data,
+        device->config.tx_storage.capacity,
+        0U
+    };
+    pn532_status_t status;
+    if (pn532_frame_encode_control(PN532_FRAME_TYPE_ACK, &frame) !=
+        PN532_FRAME_OK) {
+        core_finish(device, PN532_RESULT_TRANSPORT_ERROR,
+                    PN532_STATUS_BUFFER_TOO_SMALL);
+        return;
+    }
+    device->tx.data = frame.data;
+    device->tx.length = frame.length;
+    device->tx.timeout_ms = device->config.tx_timeout_ms;
+    status = core_ops(device)->start_tx(core_context(device), &device->tx);
+    if (status != PN532_STATUS_OK) {
+        core_finish(device, PN532_RESULT_TRANSPORT_ERROR, status);
+        return;
+    }
+    device->phase_started_ms = core_now(device);
+    device->state = PN532_CORE_RECOVERY_WAIT;
+}
+
+/** @brief Wait for physical transmission of the host ACK cancellation frame. */
+static void core_recovery_wait(pn532_t *device)
+{
+    const pn532_async_result_t result =
+        core_ops(device)->poll_tx(core_context(device));
+
+    if (result.state == PN532_ASYNC_DONE) {
+        device->state = PN532_CORE_RECOVERY_FLUSH;
+    } else if (result.state == PN532_ASYNC_FAILED) {
+        core_finish(device,
+                    result.status == PN532_STATUS_TIMEOUT
+                        ? PN532_RESULT_TX_TIMEOUT
+                        : PN532_RESULT_TRANSPORT_ERROR,
+                    result.status);
+    } else if (result.state != PN532_ASYNC_BUSY) {
+        core_abort_tx(device, PN532_RESULT_TRANSPORT_ERROR,
+                      PN532_STATUS_IO_ERROR);
+    } else if (core_expired(core_now(device), device->phase_started_ms,
+                            device->tx.timeout_ms)) {
+        core_abort_tx(device, PN532_RESULT_TX_TIMEOUT,
+                      PN532_STATUS_TIMEOUT);
+    }
+}
+
+/** @brief Purge stale RX and enter the ordinary command/ACK FSM for verification. */
+static void core_recovery_flush(pn532_t *device)
+{
+    pn532_frame_buffer_t output = {
+        device->config.tx_storage.data,
+        device->config.tx_storage.capacity,
+        0U
+    };
+    const pn532_frame_message_t message = {
+        PN532_FRAME_TFI_HOST,
+        core_firmware_command,
+        sizeof(core_firmware_command)
+    };
+    pn532_status_t status = core_ops(device)->flush_rx(core_context(device));
+    if (status != PN532_STATUS_OK) {
+        core_finish(device, PN532_RESULT_TRANSPORT_ERROR, status);
+        return;
+    }
+    if (pn532_frame_encode(&message, &output) != PN532_FRAME_OK) {
+        core_finish(device, PN532_RESULT_TRANSPORT_ERROR,
+                    PN532_STATUS_BUFFER_TOO_SMALL);
+        return;
+    }
+    device->tx.data = output.data;
+    device->tx.length = output.length;
+    device->tx.timeout_ms = device->config.tx_timeout_ms;
+    device->command_code = 0x02U;
+    device->rx.length = 0U;
+    device->rx.timeout_ms = PN532_CORE_MAX_TIMEOUT;
+    device->state = PN532_CORE_ARM_ACK;
+}
+
+pn532_status_t pn532_recover(pn532_t *device,
+                             const pn532_recovery_request_t *request)
+{
+    if (!core_ready(device)) {
+        return PN532_STATUS_INVALID_ARGUMENT;
+    }
+    if (device->state != PN532_CORE_IDLE) {
+        return PN532_STATUS_BUSY;
+    }
+    if (request == NULL || request->on_complete == NULL ||
+        request->response_timeout_ms == 0U ||
+        request->response_timeout_ms > PN532_CORE_MAX_TIMEOUT) {
+        return PN532_STATUS_INVALID_ARGUMENT;
+    }
+    if (core_ops(device)->flush_rx == NULL) {
+        return PN532_STATUS_UNSUPPORTED;
+    }
+    device->on_complete = request->on_complete;
+    device->user = request->user;
+    device->response_timeout_ms = request->response_timeout_ms;
+    device->terminal_result = PN532_RESULT_OK;
+    device->terminal_transport_status = PN532_STATUS_OK;
+    device->cancel_pending = false;
+    device->recovery_active = true;
+    device->recovery_required = true;
+    device->state = PN532_CORE_RECOVERY_TX;
+    return PN532_STATUS_OK;
+}
+
 void pn532_process(pn532_t *device)
 {
     pn532_status_t status;
@@ -363,7 +492,8 @@ void pn532_process(pn532_t *device)
 
     if (device->cancel_pending && device->state != PN532_CORE_ABORT_TX &&
         device->state != PN532_CORE_NOTIFY) {
-        if (device->state == PN532_CORE_WAIT_TX) {
+        if (device->state == PN532_CORE_WAIT_TX ||
+            device->state == PN532_CORE_RECOVERY_WAIT) {
             core_abort_tx(device, PN532_RESULT_CANCELLED,
                           PN532_STATUS_OK);
         } else {
@@ -434,6 +564,18 @@ void pn532_process(pn532_t *device)
 
     case PN532_CORE_NOTIFY:
         core_notify(device);
+        break;
+
+    case PN532_CORE_RECOVERY_TX:
+        core_recovery_start(device);
+        break;
+
+    case PN532_CORE_RECOVERY_WAIT:
+        core_recovery_wait(device);
+        break;
+
+    case PN532_CORE_RECOVERY_FLUSH:
+        core_recovery_flush(device);
         break;
 
     default:

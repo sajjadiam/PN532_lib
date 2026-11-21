@@ -57,26 +57,34 @@ static bool core_ready(const pn532_t *device)
 }
 
 /**
- * @brief Stage a single eventual callback.
+ * @brief Stage one terminal callback and apply the phase-specific cleanup.
  *
- * @param abort_transport Clear an accepted RX request and any stale bytes.
- * @param uncertain A command may have run or stream framing may be lost.
- *
- * Never call this while a TX buffer might still be in use. In that case
- * transition to PN532_CORE_ABORT_TX and await a terminal TX poll first.
+ * A validated response, NACK or application-error frame ends cleanly.
+ * Other outcomes require RX cleanup and usually protocol recovery.
+ * Cancellation before TX acceptance cannot have executed a command.
  */
 static void core_finish(pn532_t *device,
                         pn532_result_t result,
-                        pn532_status_t transport_status,
-                        bool abort_transport,
-                        bool uncertain)
+                        pn532_status_t transport_status)
 {
-    if (abort_transport) {
+    const bool complete_frame =
+        result == PN532_RESULT_OK ||
+        result == PN532_RESULT_NACK ||
+        result == PN532_RESULT_DEVICE_ERROR;
+    const bool cancelled_before_tx =
+        result == PN532_RESULT_CANCELLED &&
+        (device->state == PN532_CORE_ARM_ACK ||
+         device->state == PN532_CORE_START_TX);
+
+    /* An unsuccessful initial start_rx has no accepted RX to abort. */
+    if (!complete_frame &&
+        (device->state != PN532_CORE_ARM_ACK ||
+         result == PN532_RESULT_CANCELLED)) {
         (void)core_ops(device)->abort(core_context(device));
     }
     device->terminal_result = result;
     device->terminal_transport_status = transport_status;
-    device->recovery_required = device->recovery_required || uncertain;
+    device->recovery_required |= !complete_frame && !cancelled_before_tx;
     device->cancel_pending = false;
     device->state = PN532_CORE_NOTIFY;
 }
@@ -252,7 +260,7 @@ static void core_wait_tx(pn532_t *device)
                     result.status == PN532_STATUS_TIMEOUT
                         ? PN532_RESULT_TX_TIMEOUT
                         : PN532_RESULT_TRANSPORT_ERROR,
-                    result.status, true, true);
+                    result.status);
     } else if (result.state != PN532_ASYNC_BUSY) {
         core_abort_tx(device, PN532_RESULT_TRANSPORT_ERROR,
                       PN532_STATUS_IO_ERROR);
@@ -271,19 +279,19 @@ static void core_ack_received(pn532_t *device)
 
     if (core_decode(device, &view) != PN532_FRAME_OK) {
         core_finish(device, PN532_RESULT_FRAME_ERROR,
-                    PN532_STATUS_OK, true, true);
+                    PN532_STATUS_OK);
     } else if (view.type == PN532_FRAME_TYPE_ACK) {
         device->phase_started_ms = core_now(device);
         device->state = PN532_CORE_ARM_RESPONSE;
     } else if (view.type == PN532_FRAME_TYPE_NACK) {
         core_finish(device, PN532_RESULT_NACK,
-                    PN532_STATUS_OK, false, false);
+                    PN532_STATUS_OK);
     } else if (view.type == PN532_FRAME_TYPE_ERROR) {
         core_finish(device, PN532_RESULT_DEVICE_ERROR,
-                    PN532_STATUS_OK, false, false);
+                    PN532_STATUS_OK);
     } else {
         core_finish(device, PN532_RESULT_UNEXPECTED_RESPONSE,
-                    PN532_STATUS_OK, true, true);
+                    PN532_STATUS_OK);
     }
 }
 
@@ -294,20 +302,20 @@ static void core_response_received(pn532_t *device)
 
     if (core_decode(device, &view) != PN532_FRAME_OK) {
         core_finish(device, PN532_RESULT_FRAME_ERROR,
-                    PN532_STATUS_OK, true, true);
+                    PN532_STATUS_OK);
     } else if (view.type == PN532_FRAME_TYPE_ERROR) {
         core_finish(device, PN532_RESULT_DEVICE_ERROR,
-                    PN532_STATUS_OK, false, false);
+                    PN532_STATUS_OK);
     } else if ((view.type != PN532_FRAME_TYPE_NORMAL &&
                 view.type != PN532_FRAME_TYPE_EXTENDED) ||
                view.tfi != PN532_FRAME_TFI_DEVICE ||
                view.length < 1U ||
                view.data[0] != (uint8_t)(device->command_code + 1U)) {
         core_finish(device, PN532_RESULT_UNEXPECTED_RESPONSE,
-                    PN532_STATUS_OK, true, true);
+                    PN532_STATUS_OK);
     } else {
         core_finish(device, PN532_RESULT_OK,
-                    PN532_STATUS_OK, false, false);
+                    PN532_STATUS_OK);
     }
 }
 
@@ -322,7 +330,7 @@ static void core_wait_rx(pn532_t *device, bool ack_phase)
     if (core_expired(core_now(device), device->phase_started_ms, timeout)) {
         core_finish(device, ack_phase ? PN532_RESULT_ACK_TIMEOUT
                                       : PN532_RESULT_RESPONSE_TIMEOUT,
-                    PN532_STATUS_TIMEOUT, true, true);
+                    PN532_STATUS_TIMEOUT);
         return;
     }
 
@@ -338,10 +346,10 @@ static void core_wait_rx(pn532_t *device, bool ack_phase)
                     result.status == PN532_STATUS_FRAME_ERROR
                         ? PN532_RESULT_FRAME_ERROR
                         : PN532_RESULT_TRANSPORT_ERROR,
-                    result.status, true, true);
+                    result.status);
     } else if (result.state != PN532_ASYNC_BUSY) {
         core_finish(device, PN532_RESULT_TRANSPORT_ERROR,
-                    PN532_STATUS_IO_ERROR, true, true);
+                    PN532_STATUS_IO_ERROR);
     }
 }
 
@@ -359,10 +367,8 @@ void pn532_process(pn532_t *device)
             core_abort_tx(device, PN532_RESULT_CANCELLED,
                           PN532_STATUS_OK);
         } else {
-            bool sent = device->state != PN532_CORE_ARM_ACK &&
-                        device->state != PN532_CORE_START_TX;
             core_finish(device, PN532_RESULT_CANCELLED,
-                        PN532_STATUS_OK, true, sent);
+                        PN532_STATUS_OK);
         }
         return;
     }
@@ -375,7 +381,7 @@ void pn532_process(pn532_t *device)
             device->state = PN532_CORE_START_TX;
         } else {
             core_finish(device, PN532_RESULT_TRANSPORT_ERROR,
-                        status, false, true);
+                        status);
         }
         break;
 
@@ -387,7 +393,7 @@ void pn532_process(pn532_t *device)
             device->state = PN532_CORE_WAIT_TX;
         } else {
             core_finish(device, PN532_RESULT_TRANSPORT_ERROR,
-                        status, true, true);
+                        status);
         }
         break;
 
@@ -406,7 +412,7 @@ void pn532_process(pn532_t *device)
             device->state = PN532_CORE_WAIT_RESPONSE;
         } else {
             core_finish(device, PN532_RESULT_TRANSPORT_ERROR,
-                        status, true, true);
+                        status);
         }
         break;
 
@@ -421,7 +427,7 @@ void pn532_process(pn532_t *device)
             if (result.state == PN532_ASYNC_DONE ||
                 result.state == PN532_ASYNC_FAILED) {
                 core_finish(device, device->terminal_result,
-                            device->terminal_transport_status, true, true);
+                            device->terminal_transport_status);
             }
         }
         break;

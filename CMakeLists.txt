@@ -29,4 +29,8 @@ if(BUILD_TESTING)
     add_executable(pn532_core_tests tests/test_pn532.c)
     target_link_libraries(pn532_core_tests PRIVATE pn532_frame)
     add_test(NAME pn532_core_tests COMMAND pn532_core_tests)
+
+    add_executable(pn532_integration_tests tests/test_pn532_integration.c)
+    target_link_libraries(pn532_integration_tests PRIVATE pn532_frame)
+    add_test(NAME pn532_integration_tests COMMAND pn532_integration_tests)
 endif()

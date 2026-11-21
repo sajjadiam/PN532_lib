@@ -8,6 +8,8 @@
  */
 #include "pn532.h"
 #include "pn532_hsu.h"
+#include "pn532_cmd.h"
+#include "pn532_tag.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -471,6 +473,57 @@ static void test_extended_response(void)
                  PN532_FRAME_MAX_PAYLOAD_SIZE - 1U) == 0);
 }
 
+
+/** @brief Type-A target discovery through the real Core and HSU pipeline. */
+static void test_type_a_command_and_decode(void)
+{
+    fixture_t fixture;
+    pn532_tag_type_a_list_t tags;
+    const pn532_cmd_type_a_request_t request = {
+        2U, 60U, completion, &fixture.observer
+    };
+    const uint8_t payload[] = {
+        0x4BU, 0x02U,
+        0x01U, 0x44U, 0x00U, 0x20U, 0x07U,
+        0x04U, 0x11U, 0x22U, 0x33U, 0x44U, 0x55U, 0x66U,
+        0x03U, 0x75U, 0x77U,
+        0x02U, 0x00U, 0x04U, 0x00U, 0x04U,
+        0xAAU, 0xBBU, 0xCCU, 0xDDU
+    };
+    uint8_t frame[PN532_FRAME_MAX_SIZE];
+    uint16_t length;
+
+    fixture_init(&fixture, 3U);
+    CHECK(pn532_cmd_list_type_a(&fixture.core, &request) ==
+          PN532_STATUS_OK);
+    steps(&fixture, 2U);
+    CHECK(fixture.uart.tx_length == 11U);
+    CHECK(fixture.uart.tx_data[5] == 0xD4U);
+    CHECK(fixture.uart.tx_data[6] == 0x4AU);
+    CHECK(fixture.uart.tx_data[7] == 0x02U);
+    CHECK(fixture.uart.tx_data[8] == 0x00U);
+
+    fixture.uart.tx_complete = true;
+    step(&fixture);
+    enqueue(&fixture.uart, ack_frame, sizeof(ack_frame));
+    length = encode_response(frame, payload, sizeof(payload));
+    enqueue(&fixture.uart, frame, length);
+    until_completed(&fixture, 100U);
+    CHECK(fixture.observer.last.result == PN532_RESULT_OK);
+    CHECK(pn532_tag_parse_type_a(fixture.observer.response_copy,
+                                  fixture.observer.last.response_length,
+                                  &tags) == PN532_TAG_OK);
+    CHECK(tags.count == 2U);
+    CHECK(tags.targets[0].uid_length == 7U);
+    CHECK(tags.targets[0].ats_length == 3U);
+    CHECK(tags.targets[1].uid_length == 4U);
+    CHECK(tags.targets[1].uid[3] == 0xDDU);
+    /* Decode result remains valid after the caller reuses Core RX storage. */
+    memset(fixture.rx, 0, sizeof(fixture.rx));
+    CHECK(tags.targets[0].uid[0] == 0x04U);
+    CHECK(tags.targets[1].uid[3] == 0xDDU);
+}
+
 int main(void)
 {
     test_back_to_back_frames();
@@ -480,6 +533,7 @@ int main(void)
     test_timeout_then_recover();
     test_corrupted_response();
     test_extended_response();
+    test_type_a_command_and_decode();
     printf("PN532 Core+HSU integration: %u checks, %u failures\n",
            checks, failures);
     return failures == 0U ? 0 : 1;

@@ -80,7 +80,7 @@ static void test_all_lengths(void)
     pn532_frame_span_t in = {bytes, 0U};
     pn532_frame_view_t view;
     uint16_t expected = 0U;
-    size_t i;
+    uint16_t i;
 
     for (i = 0U; i < sizeof(payload); ++i) {
         payload[i] = (uint8_t)i;
@@ -125,7 +125,7 @@ static void test_partial_and_corrupt(void)
     pn532_frame_span_t in = {bytes, 0U};
     pn532_frame_view_t view;
     uint16_t expected = 0U;
-    size_t i;
+    uint16_t i;
 
     CHECK(pn532_frame_encode(&msg, &out) == PN532_FRAME_OK);
     for (i = 0U; i < out.length; ++i) {

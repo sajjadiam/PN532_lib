@@ -524,6 +524,78 @@ static void test_type_a_command_and_decode(void)
     CHECK(tags.targets[1].uid[3] == 0xDDU);
 }
 
+
+/** @brief InDataExchange over the complete nonblocking Core + HSU path. */
+static void test_in_data_exchange(void)
+{
+    fixture_t fixture;
+    const uint8_t read_command[] = {0x40U, 0x01U, 0x30U, 0x02U};
+    const uint8_t reply[] = {0x41U, 0x00U, 0xCAU, 0xFEU};
+    const pn532_command_t command = {
+        read_command, sizeof(read_command), 60U,
+        completion, &fixture.observer
+    };
+    pn532_cmd_exchange_view_t view;
+    uint8_t frame[PN532_FRAME_MAX_SIZE];
+    uint16_t length;
+
+    fixture_init(&fixture, 3U);
+    CHECK(pn532_cmd_in_data_exchange(&fixture.core, &command) ==
+          PN532_STATUS_OK);
+    steps(&fixture, 2U);
+    CHECK(fixture.uart.tx_length == 12U);
+    CHECK(fixture.uart.tx_data[5] == 0xD4U);
+    CHECK(fixture.uart.tx_data[6] == 0x40U);
+    CHECK(fixture.uart.tx_data[7] == 0x01U);
+    CHECK(fixture.uart.tx_data[8] == 0x30U);
+    CHECK(fixture.uart.tx_data[9] == 0x02U);
+    fixture.uart.tx_complete = true;
+    step(&fixture);
+    enqueue(&fixture.uart, ack_frame, sizeof(ack_frame));
+    length = encode_response(frame, reply, sizeof(reply));
+    enqueue(&fixture.uart, frame, length);
+    until_completed(&fixture, 100U);
+    CHECK(fixture.observer.last.result == PN532_RESULT_OK);
+    CHECK(pn532_cmd_parse_exchange(fixture.observer.response_copy,
+                                    fixture.observer.last.response_length,
+                                    &view) == PN532_CMD_EXCHANGE_OK);
+    CHECK(view.length == 2U);
+    CHECK(view.data[0] == 0xCAU && view.data[1] == 0xFEU);
+    CHECK(!view.more_information && !view.nad_present);
+}
+
+/** @brief Frame success does not imply PN532 RF exchange success. */
+static void test_in_data_exchange_rf_error(void)
+{
+    fixture_t fixture;
+    const uint8_t read_command[] = {0x40U, 0x01U, 0x30U, 0x02U};
+    const uint8_t reply[] = {0x41U, 0x27U};
+    const pn532_command_t command = {
+        read_command, sizeof(read_command), 60U,
+        completion, &fixture.observer
+    };
+    pn532_cmd_exchange_view_t view;
+    uint8_t frame[PN532_FRAME_MAX_SIZE];
+    uint16_t length;
+
+    fixture_init(&fixture, 5U);
+    CHECK(pn532_cmd_in_data_exchange(&fixture.core, &command) ==
+          PN532_STATUS_OK);
+    steps(&fixture, 2U);
+    fixture.uart.tx_complete = true;
+    step(&fixture);
+    enqueue(&fixture.uart, ack_frame, sizeof(ack_frame));
+    length = encode_response(frame, reply, sizeof(reply));
+    enqueue(&fixture.uart, frame, length);
+    until_completed(&fixture, 100U);
+    CHECK(fixture.observer.last.result == PN532_RESULT_OK);
+    CHECK(pn532_cmd_parse_exchange(fixture.observer.response_copy,
+                                    fixture.observer.last.response_length,
+                                    &view) == PN532_CMD_EXCHANGE_RF_ERROR);
+    CHECK(view.error_code == 0x27U);
+    CHECK(view.length == 0U);
+}
+
 int main(void)
 {
     test_back_to_back_frames();
@@ -534,6 +606,8 @@ int main(void)
     test_corrupted_response();
     test_extended_response();
     test_type_a_command_and_decode();
+    test_in_data_exchange();
+    test_in_data_exchange_rf_error();
     printf("PN532 Core+HSU integration: %u checks, %u failures\n",
            checks, failures);
     return failures == 0U ? 0 : 1;

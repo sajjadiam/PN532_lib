@@ -23,14 +23,17 @@ PN532_lib provides a hardware-independent interface for PN532-based embedded sys
 | HSU/UART nonblocking transport | Implemented; host-tested, hardware validation pending |
 | Command-level asynchronous Core and protocol Recovery | Implemented; host-tested |
 | Nonblocking ISO14443-A discovery and target parsing | Implemented; host-tested, hardware validation pending |
+| InDataExchange command and RF-status decoding | Implemented; host-tested, hardware validation pending |
 | Optional RST / IRQ board integration | Contract specified; implementation pending |
 | I2C and SPI | Deferred to future releases |
 
-The command Core and ISO14443-A discovery/parsing are host-tested; real hardware behavior and card-memory operations still require implementation and validation. User registries, server synchronization, gate logic and multi-reader policy belong to the application, not this PN532 library.
+The command Core, Type-A discovery/parsing, and single-frame InDataExchange are host-tested; real hardware behavior and card-memory operations still require implementation and validation. User registries, server synchronization, gate logic and multi-reader policy belong to the application, not this PN532 library.
 
 ## Architecture and contracts
 
 See [Async HSU architecture](docs/architecture.md) for transport semantics, buffer ownership and recovery rules.
+
+`pn532_cmd_in_data_exchange()` accepts a preformatted `pn532_command_t` (`0x40`, target number `1` or `2`, up to 262 data bytes). Its completion returns `Status + DataIn` after the Core strips response code `0x41`. Call `pn532_cmd_parse_exchange()` to inspect PN532 RF errors and MI/NAD flags. Chained payload assembly, specific card commands, and authentication remain application/card-protocol responsibilities.
 
 ## Testing
 

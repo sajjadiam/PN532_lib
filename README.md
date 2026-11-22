@@ -24,7 +24,8 @@ PN532_lib aims to provide a hardware-independent interface for PN532-based embed
 | Command-level asynchronous Core and protocol Recovery | Implemented; host-tested |
 | Nonblocking ISO14443-A discovery and target parsing | Implemented; host-tested, hardware validation pending |
 | Credential registry delta coordinator | Implemented; storage and network adapters pending |
-| Multi-reader scheduling and server sync | Architecture defined; implementation pending |
+| MCU-local cooperative multi-reader scheduling | Implemented; host-tested, hardware validation pending |
+| Server synchronization and RF field arbitration | Architecture defined; implementation pending |
 | Optional RST / IRQ board integration | Contract specified; implementation pending |
 | I2C and SPI | Deferred to future releases |
 
@@ -33,6 +34,8 @@ The command Core, ISO14443-A discovery/parsing and versioned registry delta cont
 ## Architecture and contracts
 
 See [Async HSU architecture](docs/architecture.md) for transport semantics and [Registry synchronization contract](docs/registry-sync.md) for server-authoritative credential revisions, cache boundaries, and limitations.
+
+See [MCU multi-reader scheduler](docs/multi-reader.md) for reader scheduling, failure isolation and RF field caveats.
 
 ## Testing
 
